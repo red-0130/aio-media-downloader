@@ -47,8 +47,7 @@ The solution leverages **`yt-dlp`** and **`gallery-dl`** orchestrating through a
 
 ```
 .
-├── .agents/
-│   └── AGENTS.md                  # This file
+├── AGENTS.md                  # This file
 ├── backend/                       # Python FastAPI Backend (managed via uv)
 │   ├── app/
 │   │   ├── __init__.py
