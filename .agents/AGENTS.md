@@ -309,20 +309,25 @@ The backend utilizes `pyffmpeg` (managed as a direct Python dependency via `uv`)
 
 ## 10. Single-Container Production Deployment
 
-A unified multi-stage `Dockerfile` packages the entire application into a single self-contained container:
-- **Stage 1 (Frontend Build)**: Uses `oven/bun:latest` to install npm dependencies and compile the Vite SPA into static assets (`frontend/dist`).
+A unified multi-stage `Dockerfile` packages the entire application into a single self-contained container using fully qualified image names (FQIN) for seamless compatibility across Docker, Podman, and Buildah:
+- **Stage 1 (Frontend Build)**: Uses `docker.io/oven/bun:1-slim` to install npm dependencies and compile the Vite SPA into static assets (`frontend/dist`).
 - **Stage 2 (Runtime Container)**:
-  - Base: Debian-slim with Python 3.12.
+  - Base: `docker.io/library/python:3.12-slim`.
   - Installs system `ffmpeg`, `ca-certificates`.
-  - Installs `uv` and synchronizes backend virtualenv.
+  - Installs `uv` (`ghcr.io/astral-sh/uv:latest`) and synchronizes backend virtualenv.
   - Copies compiled frontend assets to `backend/app/static`.
   - FastAPI serves `/api/*` endpoints and serves `static/` for all frontend routes (SPA fallback).
   - Exposes port `8000`.
 
-### Running with Docker:
+### Running with Docker or Podman:
 ```bash
+# Docker
 docker build -t all-in-one-downloader .
 docker run -p 8000:8000 -v $(pwd)/cookies:/app/cookies -v $(pwd)/downloads:/app/downloads all-in-one-downloader
+
+# Podman
+podman build -t all-in-one-downloader .
+podman run -p 8000:8000 -v $(pwd)/cookies:/app/cookies:Z -v $(pwd)/downloads:/app/downloads:Z all-in-one-downloader
 ```
 
 ---

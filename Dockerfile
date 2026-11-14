@@ -1,7 +1,7 @@
 # ==============================================================================
 # Stage 1: Build Frontend SPA with Bun
 # ==============================================================================
-FROM oven/bun:1-slim AS frontend-builder
+FROM docker.io/oven/bun:1-slim AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -16,7 +16,7 @@ RUN bun run build
 # ==============================================================================
 # Stage 2: Production Python Runtime with FFmpeg & FastAPI
 # ==============================================================================
-FROM python:3.12-slim AS runtime
+FROM docker.io/library/python:3.12-slim AS runtime
 
 # Install system dependencies (ca-certificates, curl)
 RUN apt-get update && apt-get install -y --no-install-recommends \

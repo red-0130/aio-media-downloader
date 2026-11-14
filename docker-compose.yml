@@ -1,0 +1,23 @@
+services:
+  downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: all-in-one-downloader
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./cookies:/app/cookies
+      - ./downloads:/app/downloads
+    environment:
+      - STORAGE_TTL_MINUTES=60
+      - YOUTUBE_PLAYER_CLIENTS=default
+      # Optional: Uncomment if running behind a SOCKS5 proxy
+      # - SOCKS5_PROXY=socks5://user:pass@proxy-host:1080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
