@@ -130,7 +130,7 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
             <div className="h-3 w-full bg-slate-950 rounded-full overflow-hidden border border-slate-800 p-0.5">
               <div
                 className={cn(
-                  'h-full rounded-full transition-all duration-300 ease-out shadow-sm',
+                  'h-full rounded-full transition-[width] duration-500 ease-out shadow-sm',
                   status === 'postprocessing'
                     ? 'bg-gradient-to-r from-amber-500 to-indigo-500 animate-pulse'
                     : 'bg-gradient-to-r from-indigo-600 via-indigo-500 to-sky-400'

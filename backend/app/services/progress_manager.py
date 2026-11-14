@@ -121,7 +121,9 @@ async def update_progress(
             return
 
         task.status = "downloading"
-        task.progress = min(max(round(progress, 2), 0.0), 100.0)
+        # Ensure progress is monotonic (does not decrease during a download)
+        new_progress = min(max(round(progress, 2), 0.0), 100.0)
+        task.progress = max(task.progress, new_progress)
         if speed is not None:
             task.speed = speed
         if eta is not None:

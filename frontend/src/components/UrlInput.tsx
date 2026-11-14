@@ -112,7 +112,7 @@ export const UrlInput: React.FC<UrlInputProps> = ({
           disabled={disabled || isLoading}
           placeholder="Paste URL (YouTube, Instagram reels/stories, Twitter/X, TikTok...)"
           className={cn(
-            'w-full py-4 pl-3 pr-28 bg-transparent text-slate-100 placeholder-slate-400 text-sm md:text-base outline-none',
+            'flex-1 min-w-0 py-4 pl-3 pr-2 bg-transparent text-slate-100 placeholder-slate-400 text-sm md:text-base outline-none',
             'disabled:opacity-50 disabled:cursor-not-allowed'
           )}
           aria-label="Media URL input"
@@ -120,8 +120,8 @@ export const UrlInput: React.FC<UrlInputProps> = ({
           spellCheck={false}
         />
 
-        {/* Clear & Paste buttons */}
-        <div className="absolute right-24 md:right-28 flex items-center gap-1">
+        {/* Action buttons (Clear, Paste, Inspect) */}
+        <div className="flex items-center gap-1.5 pr-2 flex-shrink-0">
           {url && !disabled && !isLoading && (
             <button
               type="button"
@@ -133,44 +133,46 @@ export const UrlInput: React.FC<UrlInputProps> = ({
             </button>
           )}
 
+          {!isLoading && (
+            <button
+              type="button"
+              onClick={handlePaste}
+              disabled={disabled}
+              aria-label="Paste from clipboard"
+              className={cn(
+                'hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors',
+                pasteSuccess && 'text-emerald-400 border-emerald-500/50 bg-emerald-500/10'
+              )}
+              title="Paste from clipboard"
+            >
+              <Clipboard className="w-3.5 h-3.5" />
+              <span>{pasteSuccess ? 'Pasted!' : 'Paste'}</span>
+            </button>
+          )}
+
+          {/* Inspect / Search Button */}
           <button
             type="button"
-            onClick={handlePaste}
-            disabled={disabled || isLoading}
-            aria-label="Paste from clipboard"
+            onClick={onInspect}
+            disabled={disabled || isLoading || !url.trim()}
+            aria-label="Inspect media"
             className={cn(
-              'hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors',
-              pasteSuccess && 'text-emerald-400 border-emerald-500/50 bg-emerald-500/10'
+              'px-4 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 transition-all duration-200 whitespace-nowrap',
+              'bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-lg shadow-indigo-600/30',
+              'hover:from-indigo-500 hover:to-indigo-600 hover:shadow-indigo-600/50 active:scale-95',
+              'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none'
             )}
-            title="Paste from clipboard"
           >
-            <Clipboard className="w-3.5 h-3.5" />
-            <span>{pasteSuccess ? 'Pasted!' : 'Paste'}</span>
+            {isLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="hidden sm:inline">Analyzing...</span>
+              </>
+            ) : (
+              <span>Inspect</span>
+            )}
           </button>
         </div>
-
-        {/* Inspect / Search Button */}
-        <button
-          type="button"
-          onClick={onInspect}
-          disabled={disabled || isLoading || !url.trim()}
-          aria-label="Inspect media"
-          className={cn(
-            'absolute right-2 px-4 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 transition-all duration-200',
-            'bg-gradient-to-r from-indigo-600 to-indigo-500 text-white shadow-lg shadow-indigo-600/30',
-            'hover:from-indigo-500 hover:to-indigo-600 hover:shadow-indigo-600/50 active:scale-95',
-            'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:shadow-none'
-          )}
-        >
-          {isLoading ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span className="hidden sm:inline">Analyzing...</span>
-            </>
-          ) : (
-            <span>Inspect</span>
-          )}
-        </button>
       </div>
 
       {/* Quick Platform Pills */}

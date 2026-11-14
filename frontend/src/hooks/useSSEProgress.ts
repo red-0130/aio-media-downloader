@@ -154,7 +154,9 @@ export function useSSEProgress(
       try {
         const data: ProgressEventData = JSON.parse(event.data);
         setStatus(data.status);
-        setProgress(data.progress ?? 0);
+        if (data.progress !== undefined && data.progress !== null) {
+          setProgress((prev) => Math.max(prev, data.progress));
+        }
         setSpeed(data.speed ?? null);
         setEta(data.eta ?? null);
         if (data.message) setMessage(data.message);
