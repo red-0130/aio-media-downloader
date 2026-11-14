@@ -58,7 +58,11 @@ async def test_download_with_format_id_selection(
         await asyncio.sleep(0.05)
 
     records = call_log.filter_by_engine("yt-dlp")
-    assert any(r.get("format_id") == "22" for r in records)
+    assert any(
+        r.get("format_id") in ("22", "22[acodec!=none]/22+bestaudio/22/best")
+        or "22" in str(r.get("format_id"))
+        for r in records
+    )
 
 
 @pytest.mark.asyncio

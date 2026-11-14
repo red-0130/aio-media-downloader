@@ -54,7 +54,7 @@ def get_extractor_args_for_url(url: str) -> list[str]:
     args: list[str] = []
     url_lower = url.lower()
     if any(domain in url_lower for domain in ("youtube.com", "youtu.be")):
-        clients = getattr(settings, "YOUTUBE_PLAYER_CLIENTS", "tv,ios,mweb,web").strip()
+        clients = getattr(settings, "YOUTUBE_PLAYER_CLIENTS", "default").strip()
         if clients:
             args.extend(["--extractor-args", f"youtube:player_client={clients}"])
     return args
@@ -220,13 +220,31 @@ async def download_media(
     if cookies_path and cookies_path.exists():
         cmd.extend(["--cookies", str(cookies_path)])
 
+    if not extract_audio:
+        cmd.extend(["--merge-output-format", "mp4"])
+
     if extract_audio:
         cmd.extend(["-x", "--audio-format", audio_format])
     elif format_id:
-        if format_id.lower() == "best":
+        clean_format = format_id.strip()
+        if not clean_format or clean_format.lower() == "best":
             cmd.extend(["-f", "bestvideo+bestaudio/best"])
+        elif clean_format.lower() == "4k":
+            cmd.extend(["-f", "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best"])
+        elif clean_format.lower().endswith("p") and clean_format[:-1].isdigit():
+            h = int(clean_format[:-1])
+            cmd.extend(["-f", f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"])
+        elif clean_format.isdigit() and int(clean_format) in (144, 240, 360, 480, 720, 1080, 1440, 2160):
+            h = int(clean_format)
+            cmd.extend(["-f", f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"])
+        elif "+" in clean_format or "/" in clean_format:
+            cmd.extend(["-f", clean_format])
         else:
-            cmd.extend(["-f", format_id])
+            cmd.extend(
+                ["-f", f"{clean_format}[acodec!=none]/{clean_format}+bestaudio/{clean_format}/best"]
+            )
+    else:
+        cmd.extend(["-f", "bestvideo+bestaudio/best"])
 
     cmd.append(url)
 

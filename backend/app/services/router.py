@@ -1,13 +1,16 @@
 """Domain and content-aware extraction router with automated fallback."""
 
 import asyncio
+from datetime import datetime, timezone
 import os
+import re
 import urllib.parse
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Callable
 
 from app.config import settings
-from app.models.download import DownloadRequest, DownloadResult
+from app.models.download import DownloadFileInfo, DownloadRequest, DownloadResult
 from app.models.inspect import FormatOption, InspectResponse, MediaItem
 from app.services import (
     cleaner,
@@ -71,12 +74,27 @@ def classify_url(url: str) -> tuple[str, str, str | None]:
     return "generic", "ytdlp", "gallerydl"
 
 
+def _extract_instagram_username_from_url(url: str) -> str | None:
+    """Extract Instagram username handle from URL if present."""
+    match = re.search(r"instagram\.com/(?:stories/)?([A-Za-z0-9._]+)/?", url)
+    if match:
+        user = match.group(1)
+        if user not in ("p", "reel", "reels", "stories", "tv", "explore"):
+            return user
+    return None
+
+
 def _normalize_ytdlp_metadata(url: str, platform: str, data: dict[str, Any]) -> InspectResponse:
     """Transform yt-dlp metadata dictionary into unified InspectResponse."""
     media_id = str(data.get("id") or "media")
     title = data.get("title") or f"{platform.capitalize()} media"
-    uploader = data.get("uploader") or data.get("channel") or data.get("creator")
+    if platform == "instagram":
+        uploader = data.get("channel") or data.get("uploader") or data.get("creator")
+    else:
+        uploader = data.get("uploader") or data.get("channel") or data.get("creator")
     thumbnail = data.get("thumbnail")
+    date_val = data.get("upload_date") or data.get("timestamp") or data.get("date")
+    orig_name_first = data.get("original_name_first") or data.get("id")
 
     # Determine media type
     if "stories" in url:
@@ -96,6 +114,8 @@ def _normalize_ytdlp_metadata(url: str, platform: str, data: dict[str, Any]) -> 
             if not isinstance(entry, dict):
                 continue
             item_type = "video" if entry.get("vcodec") != "none" else "image"
+            item_date = entry.get("upload_date") or entry.get("timestamp") or date_val
+            item_orig = entry.get("original_name_first") or entry.get("id") or str(idx + 1)
             items.append(
                 MediaItem(
                     index=idx,
@@ -106,6 +126,8 @@ def _normalize_ytdlp_metadata(url: str, platform: str, data: dict[str, Any]) -> 
                     if entry.get("width")
                     else None,
                     duration=entry.get("duration"),
+                    date=str(item_date) if item_date else None,
+                    original_name=str(item_orig) if item_orig else None,
                 )
             )
 
@@ -124,22 +146,34 @@ def _normalize_ytdlp_metadata(url: str, platform: str, data: dict[str, Any]) -> 
 
     # Extract available video resolutions
     raw_formats = data.get("formats") or []
-    seen_heights = set()
-    for fmt in reversed(raw_formats):
-        height = fmt.get("height")
-        fid = fmt.get("format_id")
+    height_to_fmt: dict[int, dict[str, Any]] = {}
+    for fmt in raw_formats:
+        h = fmt.get("height")
         vcodec = fmt.get("vcodec")
-        if height and height not in seen_heights and vcodec and vcodec != "none":
-            seen_heights.add(height)
-            formats.append(
-                FormatOption(
-                    format_id=str(fid),
-                    label=f"{height}p Video",
-                    ext=fmt.get("ext") or "mp4",
-                    filesize=fmt.get("filesize") or fmt.get("filesize_approx"),
-                    resolution=f"{height}p",
-                )
+        protocol = str(fmt.get("protocol") or "")
+        if h and vcodec and vcodec != "none":
+            # Prefer direct progressive/DASH over m3u8 / mhtml protocols
+            existing = height_to_fmt.get(h)
+            if not existing:
+                height_to_fmt[h] = fmt
+            else:
+                existing_proto = str(existing.get("protocol") or "")
+                if "m3u8" in existing_proto and "m3u8" not in protocol:
+                    height_to_fmt[h] = fmt
+
+    # Sort descending by height
+    for height in sorted(height_to_fmt.keys(), reverse=True):
+        fmt = height_to_fmt[height]
+        fid = fmt.get("format_id")
+        formats.append(
+            FormatOption(
+                format_id=str(fid),
+                label=f"{height}p Video",
+                ext=fmt.get("ext") or "mp4",
+                filesize=fmt.get("filesize") or fmt.get("filesize_approx"),
+                resolution=f"{height}p",
             )
+        )
 
     # Always offer MP3 audio extraction
     formats.append(
@@ -160,6 +194,8 @@ def _normalize_ytdlp_metadata(url: str, platform: str, data: dict[str, Any]) -> 
         media_type=media_type,
         items=items,
         formats=formats,
+        date=str(date_val) if date_val else None,
+        original_name_first=str(orig_name_first) if orig_name_first else None,
     )
 
 
@@ -178,6 +214,14 @@ def _normalize_gallerydl_metadata(
     )
     title = first.get("description") or first.get("title") or f"{platform.capitalize()} post"
     thumbnail = first.get("url") or first.get("thumbnail")
+    date_val = first.get("date") or first.get("post_date") or first.get("timestamp")
+    orig_name = (
+        first.get("original_name_first")
+        or first.get("original_name")
+        or first.get("filename")
+        or first.get("original_filename")
+        or first.get("post_id")
+    )
 
     # Detect media type
     if "stories" in url:
@@ -202,6 +246,17 @@ def _normalize_gallerydl_metadata(
         height = it.get("height")
         res_str = f"{width}x{height}" if width and height else None
 
+        item_date = it.get("date") or it.get("post_date") or it.get("timestamp") or date_val
+        item_url = it.get("url") or ""
+        item_orig = (
+            it.get("original_name_first")
+            or it.get("original_name")
+            or it.get("filename")
+            or it.get("original_filename")
+            or (Path(urlparse(item_url).path).stem if item_url else None)
+            or str(idx + 1)
+        )
+
         items.append(
             MediaItem(
                 index=idx,
@@ -210,6 +265,9 @@ def _normalize_gallerydl_metadata(
                 thumbnail=it.get("thumbnail") or it.get("url"),
                 resolution=res_str,
                 duration=it.get("duration"),
+                date=str(item_date) if item_date else None,
+                original_name=str(item_orig) if item_orig else None,
+                original_name_first=str(item_orig) if item_orig else None,
             )
         )
 
@@ -237,6 +295,8 @@ def _normalize_gallerydl_metadata(
         media_type=media_type,
         items=items,
         formats=formats,
+        date=str(date_val) if date_val else None,
+        original_name_first=str(orig_name) if orig_name else None,
     )
 
 
@@ -417,25 +477,6 @@ async def download(
             raw_file.unlink(missing_ok=True)
             downloaded_files = [audio_out]
 
-    # Package as ZIP if multiple files or explicitly requested for bundle
-    if len(downloaded_files) > 1 or (request.package_as_zip and len(downloaded_files) > 1):
-        zip_filename = f"{platform}_bundle_{task_id}.zip"
-        zip_path = task_dir / zip_filename
-        zip_service.create_zip_archive(downloaded_files, zip_path)
-        file_size = zip_path.stat().st_size
-        return DownloadResult(
-            task_id=task_id,
-            filename=zip_filename,
-            file_path=str(zip_path),
-            file_size=file_size,
-            download_url=f"/api/files/{task_id}/{zip_filename}",
-            is_zip=True,
-        )
-
-    # Single file output: apply naming conventions with genuine metadata flow
-    single_file = downloaded_files[0]
-    file_ext = single_file.suffix.lstrip(".")
-
     # Extract metadata if provided or probe if missing
     meta_dict: dict[str, Any] = {}
     if metadata:
@@ -460,15 +501,19 @@ async def download(
         meta_dict.get("uploader")
         or meta_dict.get("username")
         or meta_dict.get("user")
+        or meta_dict.get("channel")
         or meta_dict.get("author")
+        or (platform == "instagram" and _extract_instagram_username_from_url(clean_url))
+        or ("instagram_user" if platform == "instagram" else None)
     )
     date_val = (
         meta_dict.get("date")
         or meta_dict.get("upload_date")
         or meta_dict.get("timestamp")
         or meta_dict.get("created_at")
+        or (datetime.now(timezone.utc).strftime("%Y%m%d") if platform == "instagram" else None)
     )
-    orig_name = (
+    orig_name_first = (
         meta_dict.get("original_name_first")
         or meta_dict.get("original_name")
         or meta_dict.get("original_filename")
@@ -479,35 +524,162 @@ async def download(
         or meta_dict.get("post_id")
         or task_id
     )
-    title = meta_dict.get("title") or single_file.stem
+    title = meta_dict.get("title") or (downloaded_files[0].stem if downloaded_files else "media")
 
-    if platform == "instagram":
-        formatted_name = naming_service.format_instagram_filename(
-            username=uploader,
-            date_str=date_val,
-            original_name_first=orig_name,
-            media_id=str(media_id),
-            title=title,
-            ext=file_ext,
-        )
+    items_list = meta_dict.get("items") or []
+    selected = request.selected_indices
+    if selected:
+        candidate_items = [
+            items_list[i] if i < len(items_list) else None for i in selected
+        ]
     else:
-        formatted_name = naming_service.format_standard_filename(
-            title=title,
-            platform=platform,
-            media_id=str(media_id),
-            ext=file_ext,
+        candidate_items = list(items_list)
+
+    # Correlate downloaded files with item metadata: prefer name/identifier matching, fallback to index
+    matched_items: list[dict[str, Any]] = []
+    available_candidates = list(enumerate(candidate_items))
+
+    for idx, f in enumerate(downloaded_files):
+        matched_idx = None
+        matched_item: dict[str, Any] = {}
+
+        # 1. Match by original_name_first, original_name, filename, or post_id in f.stem
+        for c_idx, candidate in available_candidates:
+            if not candidate:
+                continue
+            cand_dict = (
+                candidate.model_dump()
+                if hasattr(candidate, "model_dump")
+                else (candidate if isinstance(candidate, dict) else {})
+            )
+            cand_names = [
+                cand_dict.get("original_name_first"),
+                cand_dict.get("original_name"),
+                cand_dict.get("filename"),
+                cand_dict.get("post_id"),
+            ]
+            if any(name and str(name).lower() in f.stem.lower() for name in cand_names):
+                matched_idx = c_idx
+                matched_item = cand_dict
+                break
+
+        # 2. Fallback match by index if no identifier match
+        if matched_idx is None and idx < len(candidate_items):
+            cand = candidate_items[idx]
+            if cand:
+                matched_item = (
+                    cand.model_dump()
+                    if hasattr(cand, "model_dump")
+                    else (cand if isinstance(cand, dict) else {})
+                )
+                matched_idx = idx
+
+        if matched_idx is not None:
+            available_candidates = [
+                (ci, c) for ci, c in available_candidates if ci != matched_idx
+            ]
+
+        matched_items.append(matched_item)
+
+    formatted_files: list[Path] = []
+    used_names: set[str] = set()
+
+    for idx, f in enumerate(downloaded_files):
+        file_ext = f.suffix.lstrip(".")
+        item_meta = matched_items[idx] if idx < len(matched_items) else {}
+
+        item_date = item_meta.get("date") or date_val
+        item_orig = (
+            item_meta.get("original_name_first")
+            or item_meta.get("original_name")
+            or item_meta.get("filename")
+            or (orig_name_first if len(downloaded_files) == 1 else None)
+            or (f.stem if f.stem and f.stem != "download" else None)
+            or (media_id if media_id and media_id not in ("media", "post", task_id) else None)
+            or (f"item_{idx+1}" if len(downloaded_files) > 1 else "media")
         )
 
-    renamed_path = task_dir / formatted_name
-    if single_file != renamed_path:
-        single_file.rename(renamed_path)
+        if platform == "instagram":
+            candidate_name = naming_service.format_instagram_filename(
+                username=uploader,
+                date_str=item_date,
+                original_name_first=item_orig,
+                media_id=str(media_id),
+                title=title,
+                ext=file_ext,
+            )
+        else:
+            candidate_name = naming_service.format_standard_filename(
+                title=f"{title}_{idx+1}" if len(downloaded_files) > 1 else title,
+                platform=platform,
+                media_id=str(media_id),
+                ext=file_ext,
+            )
 
-    file_size = renamed_path.stat().st_size
+        # Disambiguate if collision
+        if candidate_name in used_names or (
+            (task_dir / candidate_name).exists() and (task_dir / candidate_name) != f
+        ):
+            stem = Path(candidate_name).stem
+            ext_suffix = Path(candidate_name).suffix
+            counter = 1
+            disambiguated = f"{stem}_{counter}{ext_suffix}"
+            while disambiguated in used_names or (
+                (task_dir / disambiguated).exists() and (task_dir / disambiguated) != f
+            ):
+                counter += 1
+                disambiguated = f"{stem}_{counter}{ext_suffix}"
+            candidate_name = disambiguated
+
+        used_names.add(candidate_name)
+        target_path = task_dir / candidate_name
+        if f != target_path:
+            f.rename(target_path)
+        formatted_files.append(target_path)
+
+    # Package as ZIP if multiple files and package_as_zip is True
+    if request.package_as_zip and len(formatted_files) > 1:
+        zip_filename = f"{platform}_bundle_{task_id}.zip"
+        zip_path = task_dir / zip_filename
+        zip_service.create_zip_archive(formatted_files, zip_path)
+        file_size = zip_path.stat().st_size
+        return DownloadResult(
+            task_id=task_id,
+            filename=zip_filename,
+            file_path=str(zip_path),
+            file_size=file_size,
+            download_url=f"/api/files/{task_id}/{zip_filename}",
+            is_zip=True,
+        )
+
+    # Unbundled delivery for multiple files when package_as_zip is False
+    if len(formatted_files) > 1:
+        files_info = [
+            DownloadFileInfo(
+                filename=pf.name,
+                file_path=str(pf),
+                file_size=pf.stat().st_size,
+                download_url=f"/api/files/{task_id}/{pf.name}",
+            )
+            for pf in formatted_files
+        ]
+        return DownloadResult(
+            task_id=task_id,
+            filename=files_info[0].filename,
+            file_path=files_info[0].file_path,
+            file_size=sum(fi.file_size for fi in files_info),
+            download_url=files_info[0].download_url,
+            is_zip=False,
+            files=files_info,
+        )
+
+    # Single file output
+    single_res = formatted_files[0]
     return DownloadResult(
         task_id=task_id,
-        filename=formatted_name,
-        file_path=str(renamed_path),
-        file_size=file_size,
-        download_url=f"/api/files/{task_id}/{formatted_name}",
+        filename=single_res.name,
+        file_path=str(single_res),
+        file_size=single_res.stat().st_size,
+        download_url=f"/api/files/{task_id}/{single_res.name}",
         is_zip=False,
     )

@@ -167,6 +167,7 @@ async def set_completed(
     filename: str,
     download_url: str,
     file_size: int,
+    files: list[dict[str, Any]] | None = None,
 ) -> None:
     """Mark task as completed and emit SSE completion event."""
     async with _lock:
@@ -179,17 +180,19 @@ async def set_completed(
         task.filename = filename
         task.download_url = download_url
         task.file_size = file_size
+        task.files = files
         task.message = "Download ready"
 
-        event = _format_event(
-            "complete",
-            {
-                "status": task.status,
-                "download_url": task.download_url,
-                "filename": task.filename,
-                "file_size": task.file_size,
-            },
-        )
+        complete_payload: dict[str, Any] = {
+            "status": task.status,
+            "download_url": task.download_url,
+            "filename": task.filename,
+            "file_size": task.file_size,
+        }
+        if task.files is not None:
+            complete_payload["files"] = task.files
+
+        event = _format_event("complete", complete_payload)
         await _notify_subscribers(task_id, event)
 
 
@@ -261,15 +264,15 @@ async def subscribe_sse(task_id: str) -> AsyncGenerator[dict, None]:
                 "error", {"status": "error", "message": f"Task {task_id} not found"}
             )
         elif task.status == "completed":
-            terminal_event = _format_event(
-                "complete",
-                {
-                    "status": task.status,
-                    "download_url": task.download_url,
-                    "filename": task.filename,
-                    "file_size": task.file_size,
-                },
-            )
+            complete_data: dict[str, Any] = {
+                "status": task.status,
+                "download_url": task.download_url,
+                "filename": task.filename,
+                "file_size": task.file_size,
+            }
+            if task.files is not None:
+                complete_data["files"] = task.files
+            terminal_event = _format_event("complete", complete_data)
         elif task.status == "error":
             terminal_event = _format_event(
                 "error", {"status": "error", "message": task.error or "Task failed"}
@@ -314,15 +317,15 @@ async def subscribe_sse(task_id: str) -> AsyncGenerator[dict, None]:
                         )
                         break
                     elif task.status == "completed":
-                        yield _format_event(
-                            "complete",
-                            {
-                                "status": task.status,
-                                "download_url": task.download_url,
-                                "filename": task.filename,
-                                "file_size": task.file_size,
-                            },
-                        )
+                        complete_data: dict[str, Any] = {
+                            "status": task.status,
+                            "download_url": task.download_url,
+                            "filename": task.filename,
+                            "file_size": task.file_size,
+                        }
+                        if task.files is not None:
+                            complete_data["files"] = task.files
+                        yield _format_event("complete", complete_data)
                         break
                     elif task.status == "error":
                         yield _format_event(

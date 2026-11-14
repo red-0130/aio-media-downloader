@@ -121,11 +121,15 @@ def create_test_app() -> FastAPI:
                     progress_callback=on_progress,
                 )
 
+                files_payload = (
+                    [f.model_dump() for f in result.files] if result.files else None
+                )
                 await progress_manager.set_completed(
                     task_id=task_id,
                     filename=result.filename,
                     download_url=result.download_url,
                     file_size=result.file_size,
+                    files=files_payload,
                 )
             except Exception as exc:
                 await progress_manager.set_error(task_id=task_id, error_message=str(exc))

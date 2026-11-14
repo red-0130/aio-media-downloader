@@ -366,3 +366,134 @@ async def test_router_whitespace_proxy_falls_back_to_server_proxy(temp_environme
         assert kwargs["proxy"] == "socks5://server-proxy.corp:1080"
 
 
+def test_normalize_ytdlp_metadata_formats_sorted_descending():
+    """Verify _normalize_ytdlp_metadata sorts video formats descending by resolution height."""
+    raw_data = {
+        "id": "sample_video_123",
+        "title": "High-Res Test Video",
+        "uploader": "Test Channel",
+        "formats": [
+            {"format_id": "18", "height": 360, "vcodec": "avc1", "protocol": "https"},
+            {"format_id": "95", "height": 720, "vcodec": "avc1", "protocol": "m3u8"},
+            {"format_id": "22", "height": 720, "vcodec": "avc1", "protocol": "https"},
+            {"format_id": "137", "height": 1080, "vcodec": "avc1", "protocol": "https"},
+            {"format_id": "313", "height": 2160, "vcodec": "vp9", "protocol": "https"},
+        ],
+    }
+    normalized = router._normalize_ytdlp_metadata(
+        "https://www.youtube.com/watch?v=sample_video_123",
+        "youtube",
+        raw_data,
+    )
+    video_formats = [f for f in normalized.formats if f.format_id not in ("best", "audio-mp3")]
+    heights = [int(f.resolution.rstrip("p")) for f in video_formats if f.resolution]
+    assert heights == [2160, 1080, 720, 360]
+    # Check that 720p preferred https (format 22) over m3u8 (format 95)
+    fmt_720 = next(f for f in video_formats if f.resolution == "720p")
+    assert fmt_720.format_id == "22"
+
+
+def test_normalize_metadata_preserves_date_and_original_name():
+    """Verify _normalize_ytdlp_metadata and _normalize_gallerydl_metadata extract date and original_name."""
+    # yt-dlp metadata
+    ytdlp_data = {
+        "id": "reel_123",
+        "title": "Reel Title",
+        "channel": "instagram_artist",
+        "upload_date": "20240510",
+        "original_name_first": "clip_original",
+        "formats": [{"format_id": "best", "ext": "mp4", "height": 1080, "vcodec": "avc1"}],
+    }
+    res_ytdlp = router._normalize_ytdlp_metadata(
+        "https://www.instagram.com/reel/reel_123/", "instagram", ytdlp_data
+    )
+    assert res_ytdlp.date == "20240510"
+    assert res_ytdlp.original_name_first == "clip_original"
+    assert res_ytdlp.uploader == "instagram_artist"
+
+    # gallery-dl metadata
+    gdl_data = [
+        {
+            "post_id": "post_789",
+            "user": "photo_master",
+            "date": "2024-05-12 18:30:00",
+            "original_name_first": "golden_hour",
+            "extension": "jpg",
+            "url": "https://instagram.com/p/post_789/1.jpg",
+        },
+        {
+            "post_id": "post_789",
+            "user": "photo_master",
+            "date": "2024-05-12 18:30:00",
+            "original_name_first": "blue_hour",
+            "extension": "jpg",
+            "url": "https://instagram.com/p/post_789/2.jpg",
+        },
+    ]
+    res_gdl = router._normalize_gallerydl_metadata(
+        "https://www.instagram.com/p/post_789/", "instagram", gdl_data
+    )
+    assert res_gdl.date == "2024-05-12 18:30:00"
+    assert res_gdl.original_name_first == "golden_hour"
+    assert len(res_gdl.items) == 2
+    assert res_gdl.items[0].original_name_first == "golden_hour"
+    assert res_gdl.items[1].original_name_first == "blue_hour"
+
+
+@pytest.mark.asyncio
+async def test_download_multiple_files_unbundled_when_package_as_zip_false(temp_environment):
+    """Verify downloading multiple files delivers separate files when package_as_zip=False."""
+    task_id = "test-task-unbundled"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    img1 = task_dir / "img1.jpg"
+    img2 = task_dir / "img2.jpg"
+    img3 = task_dir / "img3.jpg"
+    img1.write_bytes(b"data1")
+    img2.write_bytes(b"data2")
+    img3.write_bytes(b"data3")
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down:
+        mock_down.return_value = [img1, img2, img3]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/334819201948/",
+            package_as_zip=False,
+            metadata={
+                "uploader": "nature_photographer",
+                "date": "20240512",
+                "items": [
+                    {"index": 0, "type": "image", "original_name_first": "mountain_peak", "date": "20240512"},
+                    {"index": 1, "type": "image", "original_name_first": "lake_view", "date": "20240512"},
+                    {"index": 2, "type": "image", "original_name_first": "forest_trail", "date": "20240512"},
+                ],
+            },
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.task_id == task_id
+        assert result.is_zip is False
+        assert not result.filename.endswith(".zip")
+        assert result.files is not None
+        assert len(result.files) == 3
+
+        # Verify no .zip exists in task_dir
+        zip_files = list(task_dir.glob("*.zip"))
+        assert len(zip_files) == 0
+
+        # Verify all 3 files exist and follow Instagram convention
+        expected_names = [
+            "nature_photographer_20240512_mountain_peak.jpg",
+            "nature_photographer_20240512_lake_view.jpg",
+            "nature_photographer_20240512_forest_trail.jpg",
+        ]
+        file_names = [f.filename for f in result.files]
+        for expected in expected_names:
+            assert expected in file_names
+            assert (task_dir / expected).exists()
+
+
+

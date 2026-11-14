@@ -13,7 +13,7 @@ import pytest
 
 from app.config import settings
 from app.main import app, lifespan
-from app.models.download import DownloadResult
+from app.models.download import DownloadFileInfo, DownloadResult
 from app.models.inspect import FormatOption, InspectResponse, MediaItem
 from app.services import cookie_manager, progress_manager, proxy_manager
 from app.services.cleaner import cleanup_old_downloads
@@ -1249,4 +1249,121 @@ async def test_cleaner_evicts_in_memory_task_records_and_404s_subsequent_progres
     # Verify requesting progress now returns 404 Not Found
     resp = await async_client.get(f"/api/progress/{tid}")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_api_youtube_high_res_format_selection(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify POST /api/download accepts high-res formats (1080p, 720p) and executes download."""
+    downloads_dir = temp_environment["downloads_dir"]
+
+    for resolution in ("1080p", "720p"):
+        fake_result = DownloadResult(
+            task_id="test-task-highres",
+            filename=f"video_{resolution}.mp4",
+            file_path=str(downloads_dir / f"video_{resolution}.mp4"),
+            file_size=10240,
+            download_url=f"/api/files/test-task-highres/video_{resolution}.mp4",
+            is_zip=False,
+        )
+
+        with patch("app.services.router.download", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = fake_result
+
+            resp = await async_client.post(
+                "/api/download",
+                json={
+                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    "format_id": resolution,
+                },
+            )
+            assert resp.status_code == 200
+            task_id = resp.json()["task_id"]
+
+            # Wait for background task to complete
+            for _ in range(50):
+                task = progress_manager.get_task(task_id)
+                if task and task.status in ("completed", "error"):
+                    break
+                await asyncio.sleep(0.05)
+
+            completed = progress_manager.get_task(task_id)
+            assert completed is not None
+            assert completed.status == "completed"
+            assert completed.filename == f"video_{resolution}.mp4"
+
+
+@pytest.mark.asyncio
+async def test_download_api_multi_item_unbundled_delivery(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify unbundled multi-item download produces files list in SSE and enables individual downloads."""
+    downloads_dir = temp_environment["downloads_dir"]
+    task_id = "test-task-unbundled-api"
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    file1 = task_dir / "user_20240512_item1.jpg"
+    file2 = task_dir / "user_20240512_item2.jpg"
+    file1.write_bytes(b"image 1 bytes")
+    file2.write_bytes(b"image 2 bytes")
+
+    files_info = [
+        DownloadFileInfo(
+            filename=file1.name,
+            file_path=str(file1),
+            file_size=file1.stat().st_size,
+            download_url=f"/api/files/{task_id}/{file1.name}",
+        ),
+        DownloadFileInfo(
+            filename=file2.name,
+            file_path=str(file2),
+            file_size=file2.stat().st_size,
+            download_url=f"/api/files/{task_id}/{file2.name}",
+        ),
+    ]
+
+    fake_result = DownloadResult(
+        task_id=task_id,
+        filename=files_info[0].filename,
+        file_path=files_info[0].file_path,
+        file_size=sum(f.file_size for f in files_info),
+        download_url=files_info[0].download_url,
+        is_zip=False,
+        files=files_info,
+    )
+
+    with patch("app.services.router.download", new_callable=AsyncMock) as mock_dl:
+        mock_dl.return_value = fake_result
+
+        resp = await async_client.post(
+            "/api/download",
+            json={
+                "url": "https://www.instagram.com/p/334819201948/",
+                "package_as_zip": False,
+            },
+        )
+        assert resp.status_code == 200
+        assigned_id = resp.json()["task_id"]
+
+        # Wait for worker completion
+        for _ in range(50):
+            task = progress_manager.get_task(assigned_id)
+            if task and task.status in ("completed", "error"):
+                break
+            await asyncio.sleep(0.05)
+
+        task = progress_manager.get_task(assigned_id)
+        assert task is not None
+        assert task.status == "completed"
+        assert task.files is not None
+        assert len(task.files) == 2
+
+        # Verify serving both individual files
+        for fi in files_info:
+            file_resp = await async_client.get(f"/api/files/{task_id}/{fi.filename}")
+            assert file_resp.status_code == 200
+            assert file_resp.headers.get("content-type") == "image/jpeg"
+
 

@@ -26,6 +26,9 @@ class MediaItem(BaseModel):
     thumbnail: str | None = Field(None, description="Direct thumbnail URL")
     resolution: str | None = Field(None, description="Resolution string (e.g. 1080x1920)")
     duration: float | None = Field(None, description="Duration in seconds if video")
+    date: str | None = Field(None, description="Media creation or upload date string")
+    original_name: str | None = Field(None, description="Original filename stem or item identifier")
+    original_name_first: str | None = Field(None, description="Original filename stem or item identifier")
 
 
 class FormatOption(BaseModel):
@@ -53,4 +56,8 @@ class InspectResponse(BaseModel):
     items: list[MediaItem] = Field(default_factory=list, description="Items for carousels or stories")
     formats: list[FormatOption] = Field(
         default_factory=list, description="Available qualities/formats for single media"
+    )
+    date: str | None = Field(None, description="Media creation or upload date string")
+    original_name_first: str | None = Field(
+        None, description="Original CDN filename stem or resource identifier"
     )

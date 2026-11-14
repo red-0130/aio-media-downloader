@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { triggerBrowserDownload } from '../lib/api';
 import type {
   CompleteEventData,
+  DownloadFileItem,
   PostprocessingEventData,
   ProgressEventData,
   TaskStatus,
@@ -47,6 +48,8 @@ export interface UseSSEProgressResult {
   filename: string | null;
   /** Output file size in bytes */
   fileSize: number | null;
+  /** Individual unbundled files list if multiple files downloaded */
+  files: DownloadFileItem[] | null;
   /** Error message if failed */
   error: string | null;
   /** True if downloading or processing is actively in-flight */
@@ -76,6 +79,7 @@ export function useSSEProgress(
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [filename, setFilename] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<number | null>(null);
+  const [files, setFiles] = useState<DownloadFileItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -104,6 +108,7 @@ export function useSSEProgress(
     setDownloadUrl(null);
     setFilename(null);
     setFileSize(null);
+    setFiles(null);
     setError(null);
   }, []);
 
@@ -182,6 +187,7 @@ export function useSSEProgress(
         setDownloadUrl(data.download_url);
         setFilename(data.filename);
         setFileSize(data.file_size);
+        setFiles(data.files ?? null);
         setMessage('Download complete');
         setConnectionState('disconnected');
 
@@ -280,6 +286,7 @@ export function useSSEProgress(
     downloadUrl,
     filename,
     fileSize,
+    files,
     error,
     isDownloading,
     isComplete,

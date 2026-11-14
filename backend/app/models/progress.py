@@ -1,6 +1,6 @@
 """Pydantic models for download progress tracking."""
 
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
@@ -19,3 +19,6 @@ class TaskProgress(BaseModel):
     filename: str | None = Field(None, description="Filename for client saving")
     file_size: int | None = Field(None, description="Total size in bytes if available")
     error: str | None = Field(None, description="Error message if task failed")
+    files: list[dict[str, Any]] | None = Field(
+        None, description="List of individual completed files when unbundled"
+    )

@@ -130,3 +130,49 @@ async def test_download_api_multi_item_zip_flow(
     assert completed is not None
     assert completed.status == "completed"
     assert completed.download_url.endswith(".zip")
+
+
+@pytest.mark.asyncio
+async def test_multi_item_download_package_as_zip_false_delivers_separate_files(
+    async_client: httpx.AsyncClient,
+    mock_bin_path: Path,
+    isolated_env: dict[str, Path],
+):
+    """Verify downloading multiple items with package_as_zip=False delivers separate files and no ZIP."""
+    import asyncio
+    from app.services import progress_manager
+
+    payload = {
+        "url": "https://www.instagram.com/p/334819201948/",
+        "selected_indices": [0, 1, 2],
+        "package_as_zip": False,
+    }
+    resp = await async_client.post("/api/download", json=payload)
+    assert resp.status_code == 200
+    task_id = resp.json()["task_id"]
+
+    for _ in range(50):
+        task = progress_manager.get_task(task_id)
+        if task and task.status == "completed":
+            break
+        await asyncio.sleep(0.05)
+
+    completed = progress_manager.get_task(task_id)
+    assert completed is not None
+    assert completed.status == "completed"
+    assert not completed.download_url.endswith(".zip")
+    assert not completed.filename.endswith(".zip")
+    assert completed.files is not None
+    assert len(completed.files) == 3
+
+    # Verify each unbundled file is accessible via file serving API
+    for file_item in completed.files:
+        assert not file_item["filename"].endswith(".zip")
+        file_resp = await async_client.get(file_item["download_url"])
+        assert file_resp.status_code == 200
+
+    # Verify no .zip was generated in task downloads directory
+    task_dir = isolated_env["downloads_dir"] / task_id
+    if task_dir.exists():
+        assert len(list(task_dir.glob("*.zip"))) == 0
+

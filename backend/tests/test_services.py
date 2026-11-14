@@ -183,7 +183,7 @@ def test_get_js_runtime_args(monkeypatch):
 def test_get_extractor_args_for_url():
     yt_args = ytdlp_service.get_extractor_args_for_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
     assert "--extractor-args" in yt_args
-    assert "youtube:player_client=tv,ios,mweb,web" in yt_args[1]
+    assert "youtube:player_client=default" in yt_args[1]
 
     youtu_be_args = ytdlp_service.get_extractor_args_for_url("https://youtu.be/dQw4w9WgXcQ")
     assert "--extractor-args" in youtu_be_args
@@ -456,3 +456,91 @@ async def test_download_services_exclude_cookie_and_temporary_files(temp_environ
         )
         assert len(gdl_files) == 1
         assert gdl_files[0].name == "valid_video.mp4"
+
+
+@pytest.mark.asyncio
+async def test_ytdlp_download_media_format_commands(temp_environment):
+    """Verify ytdlp_service.download_media builds robust format selector and merge arguments."""
+    downloads_dir = temp_environment["downloads_dir"]
+    out_dir = downloads_dir / "test-format-cmd"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fake_file = out_dir / "video.mp4"
+    fake_file.write_bytes(b"content")
+
+    test_cases = [
+        ("best", ["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"]),
+        ("1080p", ["-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", "--merge-output-format", "mp4"]),
+        ("720p", ["-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best", "--merge-output-format", "mp4"]),
+        ("4k", ["-f", "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best", "--merge-output-format", "mp4"]),
+        ("137", ["-f", "137[acodec!=none]/137+bestaudio/137/best", "--merge-output-format", "mp4"]),
+        ("bestvideo+bestaudio/best", ["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"]),
+    ]
+
+    for format_id, expected_flags in test_cases:
+        mock_proc = MockSubprocess(returncode=0, stdout_bytes=b"[download] 100%\n")
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = mock_proc
+            await ytdlp_service.download_media(
+                url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                output_dir=out_dir,
+                format_id=format_id,
+            )
+            args = mock_exec.call_args[0]
+            for flag in expected_flags:
+                assert flag in args, f"Expected flag '{flag}' for format '{format_id}', got: {args}"
+
+    # Audio extraction mode
+    mock_proc = MockSubprocess(returncode=0, stdout_bytes=b"[download] 100%\n")
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        await ytdlp_service.download_media(
+            url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            output_dir=out_dir,
+            extract_audio=True,
+            audio_format="mp3",
+        )
+        args = mock_exec.call_args[0]
+        assert "-x" in args
+        assert "--audio-format" in args
+        assert "mp3" in args
+        assert "--merge-output-format" not in args
+
+
+@pytest.mark.asyncio
+async def test_progress_manager_completion_with_files_list():
+    """Verify set_completed passes files list and subscribe_sse emits files in completion event."""
+    task = await progress_manager.create_task()
+    task_id = task.task_id
+
+    files_list = [
+        {"filename": "photo_1.jpg", "file_path": "/path/photo_1.jpg", "file_size": 1024, "download_url": f"/api/files/{task_id}/photo_1.jpg"},
+        {"filename": "photo_2.jpg", "file_path": "/path/photo_2.jpg", "file_size": 2048, "download_url": f"/api/files/{task_id}/photo_2.jpg"},
+    ]
+
+    await progress_manager.set_completed(
+        task_id=task_id,
+        filename="photo_1.jpg",
+        download_url=f"/api/files/{task_id}/photo_1.jpg",
+        file_size=3072,
+        files=files_list,
+    )
+
+    completed_task = progress_manager.get_task(task_id)
+    assert completed_task is not None
+    assert completed_task.status == "completed"
+    assert completed_task.files == files_list
+
+    # Test subscribe_sse cached terminal event contains files
+    events = []
+    async for event in progress_manager.subscribe_sse(task_id):
+        events.append(event)
+
+    assert len(events) == 1
+    complete_ev = events[0]
+    assert complete_ev["event"] == "complete"
+    payload = json.loads(complete_ev["data"])
+    assert payload["status"] == "completed"
+    assert "files" in payload
+    assert len(payload["files"]) == 2
+    assert payload["files"][0]["filename"] == "photo_1.jpg"
+    assert payload["files"][1]["filename"] == "photo_2.jpg"

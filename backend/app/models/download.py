@@ -32,6 +32,15 @@ class DownloadResponse(BaseModel):
     status: str = Field("queued", description="Initial task status")
 
 
+class DownloadFileInfo(BaseModel):
+    """Metadata for an individual unbundled downloaded file."""
+
+    filename: str = Field(..., description="Filename of individual file")
+    file_path: str = Field(..., description="Absolute path on disk")
+    file_size: int = Field(..., description="Size in bytes")
+    download_url: str = Field(..., description="Relative API URL to retrieve file")
+
+
 class DownloadResult(BaseModel):
     """Final result of a completed download task."""
 
@@ -41,3 +50,6 @@ class DownloadResult(BaseModel):
     file_size: int = Field(..., description="Size of the output file in bytes")
     download_url: str = Field(..., description="Relative API URL to retrieve the file")
     is_zip: bool = Field(False, description="True if output is a packaged ZIP archive")
+    files: list[DownloadFileInfo] | None = Field(
+        None, description="List of individual files if delivered unbundled"
+    )

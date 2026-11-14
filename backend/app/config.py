@@ -42,7 +42,7 @@ class Settings(BaseModel):
 
     # YouTube player clients preference order
     YOUTUBE_PLAYER_CLIENTS: str = Field(
-        default_factory=lambda: os.getenv("YOUTUBE_PLAYER_CLIENTS", "tv,ios,mweb,web")
+        default_factory=lambda: os.getenv("YOUTUBE_PLAYER_CLIENTS", "default")
     )
 
     # Storage cleanup TTL in minutes

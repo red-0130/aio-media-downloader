@@ -9,8 +9,9 @@ import {
   Activity,
   Timer,
   FileCheck,
+  Files,
 } from 'lucide-react';
-import type { TaskStatus } from '../types/api';
+import type { DownloadFileItem, TaskStatus } from '../types/api';
 import { cn, formatBytes } from '../lib/utils';
 import { triggerBrowserDownload } from '../lib/api';
 
@@ -23,6 +24,7 @@ export interface DownloadProgressProps {
   downloadUrl: string | null;
   filename: string | null;
   fileSize: number | null;
+  files?: DownloadFileItem[] | null;
   error: string | null;
   isDownloading: boolean;
   isComplete: boolean;
@@ -39,6 +41,7 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
   downloadUrl,
   filename,
   fileSize,
+  files,
   error,
   isDownloading,
   isComplete,
@@ -51,6 +54,15 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
     if (downloadUrl) {
       triggerBrowserDownload(downloadUrl, filename || undefined);
     }
+  };
+
+  const handleDownloadAllClick = () => {
+    if (!files || files.length === 0) return;
+    files.forEach((f, idx) => {
+      setTimeout(() => {
+        triggerBrowserDownload(f.download_url, f.filename);
+      }, idx * 200);
+    });
   };
 
   return (
@@ -161,41 +173,113 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
       {/* Completed State */}
       {isComplete && (
         <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30">
-            <div className="flex items-start gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
-                <FileCheck className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-slate-100 truncate" title={filename || ''}>
-                  {filename || 'Downloaded File'}
+          {files && files.length > 1 ? (
+            /* Multi-File Unbundled Delivery Card */
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30">
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
+                    <Files className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-100">
+                      {files.length} Files Ready to Save
+                    </div>
+                    <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
+                      {fileSize && (
+                        <span className="font-mono text-emerald-300 font-medium">
+                          {formatBytes(fileSize)} total
+                        </span>
+                      )}
+                      <span>•</span>
+                      <span>Delivered as separate files</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
-                  {fileSize && (
-                    <span className="font-mono text-emerald-300 font-medium">
-                      {formatBytes(fileSize)}
-                    </span>
+
+                {/* Save All Files Button */}
+                <button
+                  type="button"
+                  onClick={handleDownloadAllClick}
+                  className={cn(
+                    'px-5 py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 flex-shrink-0',
+                    'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-600/30',
+                    'hover:from-emerald-500 hover:to-emerald-600 hover:shadow-emerald-600/50 active:scale-95'
                   )}
-                  <span>•</span>
-                  <span>Ready to save to disk</span>
-                </div>
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Save All Files ({files.length})</span>
+                </button>
+              </div>
+
+              {/* Individual Files Item List */}
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {files.map((file, idx) => (
+                  <div
+                    key={file.filename || idx}
+                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 text-xs"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FileCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                      <span className="font-medium text-slate-200 truncate" title={file.filename}>
+                        {file.filename}
+                      </span>
+                      {file.file_size && (
+                        <span className="text-slate-400 font-mono flex-shrink-0">
+                          ({formatBytes(file.file_size)})
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => triggerBrowserDownload(file.download_url, file.filename)}
+                      className="px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/50 flex items-center gap-1.5 font-medium transition-colors flex-shrink-0"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Save</span>
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
+          ) : (
+            /* Single File or Packaged ZIP Delivery Card */
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
+                  <FileCheck className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-100 truncate" title={filename || ''}>
+                    {filename || 'Downloaded File'}
+                  </div>
+                  <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
+                    {fileSize && (
+                      <span className="font-mono text-emerald-300 font-medium">
+                        {formatBytes(fileSize)}
+                      </span>
+                    )}
+                    <span>•</span>
+                    <span>Ready to save to disk</span>
+                  </div>
+                </div>
+              </div>
 
-            {/* Direct Download Button */}
-            <button
-              type="button"
-              onClick={handleDownloadClick}
-              className={cn(
-                'px-5 py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 flex-shrink-0',
-                'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-600/30',
-                'hover:from-emerald-500 hover:to-emerald-600 hover:shadow-emerald-600/50 active:scale-95'
-              )}
-            >
-              <Download className="w-4 h-4" />
-              <span>Save File</span>
-            </button>
-          </div>
+              {/* Direct Download Button */}
+              <button
+                type="button"
+                onClick={handleDownloadClick}
+                className={cn(
+                  'px-5 py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 flex-shrink-0',
+                  'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-600/30',
+                  'hover:from-emerald-500 hover:to-emerald-600 hover:shadow-emerald-600/50 active:scale-95'
+                )}
+              >
+                <Download className="w-4 h-4" />
+                <span>Save File</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
 

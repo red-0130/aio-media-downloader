@@ -78,6 +78,12 @@ export interface MediaItem {
   resolution?: string | null;
   /** Duration in seconds if video */
   duration?: number | null;
+  /** Creation or upload date string */
+  date?: string | null;
+  /** Original filename stem */
+  original_name?: string | null;
+  /** Original CDN filename stem */
+  original_name_first?: string | null;
 }
 
 /** Available download quality or format */
@@ -117,6 +123,10 @@ export interface InspectResponse {
   items?: MediaItem[];
   /** Available qualities/formats for single media */
   formats?: FormatOption[];
+  /** Media creation or upload date string */
+  date?: string | null;
+  /** Original CDN filename stem or resource identifier */
+  original_name_first?: string | null;
 }
 
 // ============================================================================
@@ -153,6 +163,16 @@ export interface DownloadResponse {
   status: string;
 }
 
+/** Individual downloaded file information when unbundled */
+export interface DownloadFileItem {
+  /** Filename of individual file */
+  filename: string;
+  /** Relative API URL to retrieve the file */
+  download_url: string;
+  /** File size in bytes if available */
+  file_size?: number | null;
+}
+
 /** Final result of a completed download task (internal router/service contract) */
 export interface DownloadResult {
   /** Unique task identifier */
@@ -167,6 +187,8 @@ export interface DownloadResult {
   download_url: string;
   /** True if output is a packaged ZIP archive */
   is_zip: boolean;
+  /** Individual files if unbundled */
+  files?: DownloadFileItem[] | null;
 }
 
 // ============================================================================
@@ -195,6 +217,8 @@ export interface TaskProgress {
   file_size?: number | null;
   /** Error message if task failed */
   error?: string | null;
+  /** Individual completed files when unbundled */
+  files?: DownloadFileItem[] | null;
 }
 
 /** SSE Event Names emitted by GET /api/progress/{task_id} */
@@ -225,6 +249,7 @@ export interface CompleteEventData {
   download_url: string;
   filename: string;
   file_size: number;
+  files?: DownloadFileItem[] | null;
 }
 
 export type CompleteEventPayload = CompleteEventData;

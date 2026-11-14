@@ -376,6 +376,7 @@ export const App: React.FC = () => {
               downloadUrl={sse.downloadUrl}
               filename={sse.filename}
               fileSize={sse.fileSize}
+              files={sse.files}
               error={sse.error}
               isDownloading={sse.isDownloading}
               isComplete={sse.isComplete}
