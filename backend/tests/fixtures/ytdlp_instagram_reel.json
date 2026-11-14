@@ -1,0 +1,24 @@
+{
+  "id": "C7XYZ89_abc",
+  "title": "Amazing scenic mountain hike reel",
+  "uploader": "travel_enthusiast",
+  "channel": "travel_enthusiast",
+  "thumbnail": "https://instagram.com/p/C7XYZ89_abc/thumbnail.jpg",
+  "duration": 28.5,
+  "ext": "mp4",
+  "vcodec": "avc1",
+  "acodec": "mp4a",
+  "height": 1920,
+  "width": 1080,
+  "formats": [
+    {
+      "format_id": "best",
+      "ext": "mp4",
+      "height": 1920,
+      "width": 1080,
+      "vcodec": "avc1",
+      "acodec": "mp4a",
+      "filesize": 15920381
+    }
+  ]
+}

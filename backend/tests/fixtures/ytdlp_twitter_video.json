@@ -1,0 +1,23 @@
+{
+  "id": "1789456123987",
+  "title": "Breaking tech announcement video clip",
+  "uploader": "technews",
+  "thumbnail": "https://pbs.twimg.com/media/xyz123.jpg",
+  "duration": 45.0,
+  "ext": "mp4",
+  "vcodec": "h264",
+  "acodec": "aac",
+  "height": 720,
+  "width": 1280,
+  "formats": [
+    {
+      "format_id": "720p",
+      "ext": "mp4",
+      "height": 720,
+      "width": 1280,
+      "vcodec": "h264",
+      "acodec": "aac",
+      "filesize": 8941029
+    }
+  ]
+}

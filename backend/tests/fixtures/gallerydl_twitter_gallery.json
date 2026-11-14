@@ -1,0 +1,20 @@
+[
+  {
+    "tweet_id": "1789456123999",
+    "author": "digital_artist",
+    "description": "My latest four-panel comic strip series",
+    "extension": "jpg",
+    "url": "https://pbs.twimg.com/media/comic_panel1.jpg",
+    "width": 1200,
+    "height": 1200
+  },
+  {
+    "tweet_id": "1789456123999",
+    "author": "digital_artist",
+    "description": "My latest four-panel comic strip series",
+    "extension": "jpg",
+    "url": "https://pbs.twimg.com/media/comic_panel2.jpg",
+    "width": 1200,
+    "height": 1200
+  }
+]

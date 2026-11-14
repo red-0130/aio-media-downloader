@@ -1,0 +1,21 @@
+{
+  "id": "736592817294829104",
+  "title": "Cooking the ultimate pasta recipe",
+  "uploader": "cheftok",
+  "thumbnail": "https://p16.tiktokcdn.com/obj/tos-maliva-p-0068/cooking.jpeg",
+  "duration": 58.0,
+  "ext": "mp4",
+  "vcodec": "h264",
+  "acodec": "aac",
+  "height": 1080,
+  "width": 1920,
+  "formats": [
+    {
+      "format_id": "download_addr",
+      "ext": "mp4",
+      "height": 1080,
+      "width": 1920,
+      "filesize": 14209581
+    }
+  ]
+}

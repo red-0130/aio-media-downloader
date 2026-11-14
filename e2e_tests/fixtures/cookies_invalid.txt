@@ -1,0 +1,13 @@
+{
+  "cookies": [
+    {
+      "domain": ".instagram.com",
+      "name": "sessionid",
+      "value": "invalid_json_format"
+    }
+  ]
+}
+This is not a Netscape HTTP Cookie file format.
+Random corrupted lines:
+not_a_tab_separated_line_with_seven_columns
+foo bar baz

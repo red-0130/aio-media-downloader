@@ -1,0 +1,39 @@
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Python artifacts and caches
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/.venv/
+**/venv/
+**/env/
+**/.pytest_cache/
+**/.coverage
+**/htmlcov/
+**/.mypy_cache/
+**/.ruff_cache/
+backend/tests/
+
+# Node / Frontend artifacts
+**/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Application runtime storage & temporary files (preserve .gitkeep)
+downloads/*
+!downloads/.gitkeep
+cookies/*
+!cookies/.gitkeep
+
+# Local dev scripts & Agent metadata
+scripts/
+.agents/
+.gemini/
+.claude/
+*.log
+.DS_Store
+Thumbs.db

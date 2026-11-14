@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Mock yt-dlp executable for hermetic E2E testing."""
+
+import json
+import os
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+# Add mocks folder to sys.path to import mock_engine_data
+MOCK_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(MOCK_DIR))
+
+try:
+    import mock_engine_data
+except ImportError:
+    mock_engine_data = None
+
+
+def parse_args():
+    args = sys.argv[1:]
+    parsed = {
+        "url": None,
+        "proxy": None,
+        "cookies": None,
+        "output_template": None,
+        "format_id": None,
+        "extract_audio": False,
+        "audio_format": "mp3",
+        "dump_json": False,
+        "skip_download": False,
+    }
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--dump-single-json", "--dump-json", "-j", "-J"):
+            parsed["dump_json"] = True
+        elif arg == "--skip-download":
+            parsed["skip_download"] = True
+        elif arg in ("-x", "--extract-audio"):
+            parsed["extract_audio"] = True
+        elif arg in ("--audio-format",):
+            if i + 1 < len(args):
+                parsed["audio_format"] = args[i + 1]
+                i += 1
+        elif arg in ("-f", "--format"):
+            if i + 1 < len(args):
+                parsed["format_id"] = args[i + 1]
+                i += 1
+        elif arg in ("-o", "--output"):
+            if i + 1 < len(args):
+                parsed["output_template"] = args[i + 1]
+                i += 1
+        elif arg == "--proxy":
+            if i + 1 < len(args):
+                parsed["proxy"] = args[i + 1]
+                i += 1
+        elif arg == "--cookies":
+            if i + 1 < len(args):
+                parsed["cookies"] = args[i + 1]
+                i += 1
+        elif not arg.startswith("-"):
+            parsed["url"] = arg
+        i += 1
+
+    return parsed
+
+
+def log_call(parsed):
+    log_path = Path(
+        os.environ.get("MOCK_CALL_LOG_PATH") or (MOCK_DIR / "call_log.json")
+    )
+    records = []
+    if log_path.exists():
+        try:
+            records = json.loads(log_path.read_text(encoding="utf-8"))
+            if not isinstance(records, list):
+                records = []
+        except Exception:
+            records = []
+
+    records.append(
+        {
+            "engine": "yt-dlp",
+            "args": sys.argv[1:],
+            "url": parsed["url"],
+            "proxy": parsed["proxy"],
+            "cookies": parsed["cookies"],
+            "format_id": parsed["format_id"],
+            "extract_audio": parsed["extract_audio"],
+            "audio_format": parsed["audio_format"],
+            "output_template": parsed["output_template"],
+            "timestamp": time.time(),
+        }
+    )
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def main():
+    parsed = parse_args()
+    log_call(parsed)
+    url = parsed["url"] or ""
+    url_lower = url.lower()
+
+    # Error simulation triggers
+    if "login_required" in url_lower or "auth_error" in url_lower:
+        sys.stderr.write(
+            "ERROR: [youtube] Private video. Sign in to confirm you're not a bot or login required.\n"
+        )
+        sys.exit(1)
+
+    if "rate_limit" in url_lower:
+        sys.stderr.write(
+            "ERROR: [youtube] HTTP Error 429: Too Many Requests. Rate limit reached.\n"
+        )
+        sys.exit(1)
+
+    if (
+        "fail_engine" in url_lower
+        or "fail_ytdlp" in url_lower
+        or "unsupported_url" in url_lower
+    ):
+        sys.stderr.write(
+            "ERROR: Unsupported URL: Extraction failed for yt-dlp.\n"
+        )
+        sys.exit(1)
+
+    # 1. Inspection (--dump-single-json)
+    if parsed["dump_json"]:
+        if mock_engine_data:
+            meta = mock_engine_data.resolve_ytdlp_metadata(url)
+        else:
+            meta = {
+                "id": "dQw4w9WgXcQ",
+                "title": "Sample Video",
+                "uploader": "Uploader",
+                "formats": [],
+            }
+        # Print JSON to stdout
+        sys.stdout.write(json.dumps(meta) + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+
+    # 2. Download Execution
+    # Stream progress lines
+    progress_lines = [
+        "[download]   0.0% of 10.00MiB at 2.50MiB/s ETA 00:04",
+        "[download]  25.0% of 10.00MiB at 2.50MiB/s ETA 00:03",
+        "[download]  50.0% of 10.00MiB at 2.50MiB/s ETA 00:02",
+        "[download]  75.0% of 10.00MiB at 2.50MiB/s ETA 00:01",
+        "[download] 100.0% of 10.00MiB at 2.50MiB/s ETA 00:00",
+    ]
+    for pline in progress_lines:
+        sys.stdout.write(pline + "\n")
+        sys.stdout.flush()
+
+    # Determine destination file
+    out_tmpl = parsed["output_template"] or "%(title)s.%(ext)s"
+    meta = (
+        mock_engine_data.resolve_ytdlp_metadata(url)
+        if mock_engine_data
+        else {"title": "Sample Video", "id": "12345"}
+    )
+    title = meta.get("title", "Sample Video")
+    # Clean title for filename substitution
+    clean_title = re.sub(r'[/\\:*?"<>|]', "", title).strip() or "video"
+
+    ext = parsed["audio_format"] if parsed["extract_audio"] else "mp4"
+
+    # Resolve output directory
+    target_dir = Path(".")
+    if "/" in out_tmpl:
+        target_dir = Path(out_tmpl).parent
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / f"{clean_title}.{ext}"
+
+    # Copy fixture media if available
+    sample_fixtures_dir = MOCK_DIR.parent / "fixtures" / "sample_media"
+    source_fixture = (
+        sample_fixtures_dir / f"sample.{ext}"
+        if (sample_fixtures_dir / f"sample.{ext}").exists()
+        else sample_fixtures_dir / "sample.mp4"
+    )
+
+    if source_fixture.exists():
+        shutil.copyfile(source_fixture, target_file)
+    else:
+        target_file.write_bytes(b"\x00" * 1024)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

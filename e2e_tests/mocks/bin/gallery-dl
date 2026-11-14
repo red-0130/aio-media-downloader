@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Mock gallery-dl executable for hermetic E2E testing."""
+
+import json
+import os
+import re
+import shutil
+import sys
+import time
+from pathlib import Path
+
+# Add mocks folder to sys.path to import mock_engine_data
+MOCK_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(MOCK_DIR))
+
+try:
+    import mock_engine_data
+except ImportError:
+    mock_engine_data = None
+
+
+def parse_args():
+    args = sys.argv[1:]
+    parsed = {
+        "url": None,
+        "proxy": None,
+        "cookies": None,
+        "dest_dir": None,
+        "range": None,
+        "dump_json": False,
+        "simulate": False,
+    }
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--dump-json", "-j"):
+            parsed["dump_json"] = True
+        elif arg == "--simulate":
+            parsed["simulate"] = True
+        elif arg in ("-d", "--dest", "--destination"):
+            if i + 1 < len(args):
+                parsed["dest_dir"] = args[i + 1]
+                i += 1
+        elif arg == "--range":
+            if i + 1 < len(args):
+                parsed["range"] = args[i + 1]
+                i += 1
+        elif arg == "--proxy":
+            if i + 1 < len(args):
+                parsed["proxy"] = args[i + 1]
+                i += 1
+        elif arg == "--cookies":
+            if i + 1 < len(args):
+                parsed["cookies"] = args[i + 1]
+                i += 1
+        elif not arg.startswith("-"):
+            parsed["url"] = arg
+        i += 1
+
+    return parsed
+
+
+def log_call(parsed):
+    log_path = Path(
+        os.environ.get("MOCK_CALL_LOG_PATH") or (MOCK_DIR / "call_log.json")
+    )
+    records = []
+    if log_path.exists():
+        try:
+            records = json.loads(log_path.read_text(encoding="utf-8"))
+            if not isinstance(records, list):
+                records = []
+        except Exception:
+            records = []
+
+    records.append(
+        {
+            "engine": "gallery-dl",
+            "args": sys.argv[1:],
+            "url": parsed["url"],
+            "proxy": parsed["proxy"],
+            "cookies": parsed["cookies"],
+            "dest_dir": parsed["dest_dir"],
+            "range": parsed["range"],
+            "timestamp": time.time(),
+        }
+    )
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def main():
+    parsed = parse_args()
+    log_call(parsed)
+    url = parsed["url"] or ""
+    url_lower = url.lower()
+
+    # Error simulation triggers
+    if "login_required" in url_lower or "auth_error" in url_lower:
+        sys.stderr.write(
+            "ERROR: [instagram] Login required: requires authentication or private account.\n"
+        )
+        sys.exit(1)
+
+    if "rate_limit" in url_lower:
+        sys.stderr.write(
+            "ERROR: [instagram] HTTP Error 429: Too many requests / rate limit reached.\n"
+        )
+        sys.exit(1)
+
+    if (
+        "fail_engine" in url_lower
+        or "fail_gallerydl" in url_lower
+        or "unsupported_url" in url_lower
+    ):
+        sys.stderr.write(
+            "ERROR: gallery-dl found no media items for this URL.\n"
+        )
+        sys.exit(1)
+
+    items = (
+        mock_engine_data.resolve_gallerydl_metadata(url)
+        if mock_engine_data
+        else [
+            {
+                "post_id": "item1",
+                "user": "user",
+                "description": "desc",
+                "extension": "jpg",
+            }
+        ]
+    )
+
+    # 1. Inspection (--dump-json)
+    if parsed["dump_json"] or parsed["simulate"]:
+        # gallery-dl prints each item either as [2, item_dict] or item_dict
+        for item in items:
+            sys.stdout.write(json.dumps([2, item]) + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+
+    # 2. Download Execution (-d <output_dir>)
+    dest = Path(parsed["dest_dir"] or ".")
+    dest.mkdir(parents=True, exist_ok=True)
+
+    # Parse --range (1-based indices, e.g. "1,3" or "2")
+    active_items = items
+    if parsed["range"]:
+        try:
+            chosen_indices = set()
+            for part in str(parsed["range"]).split(","):
+                part = part.strip()
+                if "-" in part:
+                    s, e = part.split("-", 1)
+                    chosen_indices.update(range(int(s) - 1, int(e)))
+                elif part.isdigit():
+                    chosen_indices.add(int(part) - 1)
+            active_items = [
+                item for idx, item in enumerate(items) if idx in chosen_indices
+            ]
+        except Exception:
+            active_items = items
+
+    sample_fixtures_dir = MOCK_DIR.parent / "fixtures" / "sample_media"
+
+    for idx, item in enumerate(active_items):
+        ext = item.get("extension", "jpg").lower()
+        post_id = item.get("post_id") or item.get("tweet_id") or item.get("id") or f"item_{idx}"
+        user = item.get("user") or item.get("author") or "media"
+        if "instagram.com" in url_lower and item.get("date"):
+            date_val = str(item.get("date"))[:10].replace("-", "")
+            orig_name = item.get("original_name_first") or f"{post_id}_{idx + 1}"
+            filename = f"{user}_{date_val}_{orig_name}.{ext}"
+        else:
+            filename = f"{user}_{post_id}_{idx + 1}.{ext}"
+        target_file = dest / filename
+
+        source_fixture = sample_fixtures_dir / f"sample.{ext}"
+        if not source_fixture.exists():
+            source_fixture = (
+                sample_fixtures_dir / "sample.mp4"
+                if ext == "mp4"
+                else sample_fixtures_dir / "sample.jpg"
+            )
+
+        if source_fixture.exists():
+            shutil.copyfile(source_fixture, target_file)
+        else:
+            target_file.write_bytes(b"\x00" * 1024)
+
+        # Print downloaded item line for gallerydl_service stdout parser
+        sys.stdout.write(f"# {target_file}\n")
+        sys.stdout.flush()
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
