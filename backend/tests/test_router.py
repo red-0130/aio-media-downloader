@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import AsyncMock, patch
 import pytest
 
@@ -494,6 +495,79 @@ async def test_download_multiple_files_unbundled_when_package_as_zip_false(temp_
         for expected in expected_names:
             assert expected in file_names
             assert (task_dir / expected).exists()
+
+
+@pytest.mark.asyncio
+async def test_download_twitter_hashtag_title_retains_hash_and_encodes_url(temp_environment):
+    """Regression Test (R1 & R2):
+
+    Verify router.download retains leading '#' in filename and percent-encodes '%23'
+    in download_url for Twitter posts with text starting with '#'.
+    """
+    task_id = "twitter-hashtag-test-123"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    fake_file = task_dir / "raw_twitter_video.mp4"
+    fake_file.write_bytes(b"twitter test stream")
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down:
+        mock_down.return_value = [fake_file]
+
+        hashtag_title = "#Umingle #Ometv #Monkeyapp #Omegle #CSL"
+        req = DownloadRequest(
+            url="https://x.com/CSLfrreac/status/2121343870013222933?a=UXOELjiUHqCARzEpBGU&s=20",
+            package_as_zip=False,
+            metadata={
+                "id": "2121343870013222933",
+                "title": hashtag_title,
+                "platform": "twitter",
+            },
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.task_id == task_id
+        assert result.is_zip is False
+        # Filename retains leading '#'
+        assert result.filename.startswith("#")
+        assert result.filename == f"{hashtag_title}.mp4"
+        assert Path(result.file_path).exists()
+        assert Path(result.file_path).name == f"{hashtag_title}.mp4"
+
+        # Download URL is properly URL-encoded (%23 instead of raw #)
+        assert "#" not in result.download_url
+        assert "%23" in result.download_url
+        assert result.download_url == f"/api/files/{task_id}/{quote(result.filename)}"
+
+
+def test_normalize_gallerydl_metadata_extracts_content_hashtag():
+    """Verify _normalize_gallerydl_metadata extracts tweet content starting with '#' as post title."""
+    items_data = [
+        {
+            "category": "twitter",
+            "subcategory": "tweet",
+            "tweet_id": "2121343870013222933",
+            "author": {"name": "CSL", "nick": "CSLfrreac"},
+            "content": "#Umingle #Ometv #Monkeyapp #Omegle #CSL",
+            "description": None,
+            "title": None,
+            "extension": "mp4",
+            "url": "https://video.twimg.com/ext_tw_video/2121343870013222933/pu/vid/avc1/720x1280/test.mp4",
+        }
+    ]
+
+    res = router._normalize_gallerydl_metadata(
+        url="https://x.com/CSLfrreac/status/2121343870013222933",
+        platform="twitter",
+        items_data=items_data,
+    )
+
+    assert res.title.startswith("#")
+    assert res.title == "#Umingle #Ometv #Monkeyapp #Omegle #CSL"
+    assert res.id == "2121343870013222933"
+
 
 
 

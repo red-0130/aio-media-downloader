@@ -177,12 +177,26 @@ async def set_completed(
         if not task:
             return
 
+        # Ensure download_url has properly URL-encoded special characters (e.g. # as %23)
+        # to prevent browsers from interpreting the filename as a client-side fragment identifier.
+        safe_download_url = download_url
+        if safe_download_url and "#" in safe_download_url:
+            safe_download_url = safe_download_url.replace("#", "%23")
+
+        safe_files = files
+        if safe_files:
+            for f_info in safe_files:
+                if isinstance(f_info, dict) and "download_url" in f_info:
+                    f_url = f_info.get("download_url")
+                    if f_url and "#" in f_url:
+                        f_info["download_url"] = f_url.replace("#", "%23")
+
         task.status = "completed"
         task.progress = 100.0
         task.filename = filename
-        task.download_url = download_url
+        task.download_url = safe_download_url
         task.file_size = file_size
-        task.files = files
+        task.files = safe_files
         task.message = "Download ready"
 
         complete_payload: dict[str, Any] = {

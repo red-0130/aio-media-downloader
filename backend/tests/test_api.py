@@ -741,6 +741,55 @@ async def test_serve_multilingual_filenames_utf8_content_disposition(
 
 
 @pytest.mark.asyncio
+async def test_serve_hashtag_filename_preserves_leading_hash_and_disposition(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify serving a file whose filename starts with '#' (e.g. from Twitter post text)
+
+    preserves the leading '#' in Content-Disposition (both filename= and filename*=),
+    does not cause routing errors, and serves the complete media payload.
+    """
+    task_dir = temp_environment["downloads_dir"] / "task-file-hashtag"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    hashtag_name = "#Umingle #Ometv #Monkeyapp #Omegle #CSL.mp4"
+    hashtag_file = task_dir / hashtag_name
+    hashtag_file.write_bytes(b"dummy twitter video with hashtag bytes")
+
+    # The client requests the URL-encoded path (/api/files/{task_id}/%23...)
+    encoded_filename = quote(hashtag_name)
+    resp = await async_client.get(f"/api/files/task-file-hashtag/{encoded_filename}")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type") == "video/mp4"
+
+    disp = resp.headers.get("content-disposition", "")
+    assert "attachment" in disp.lower()
+    # Verify standard ASCII filename parameter retains '#'
+    assert f'filename="{hashtag_name}"' in disp
+    # Verify RFC 5987 filename* parameter retains URL-encoded '%23'
+    assert f"filename*=utf-8''{encoded_filename}" in disp
+    assert resp.content == b"dummy twitter video with hashtag bytes"
+
+
+@pytest.mark.asyncio
+async def test_serve_hashtag_filename_double_encoded_fallback(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify serving a hashtag filename when double-encoded (%2523) correctly resolves to the file."""
+    task_dir = temp_environment["downloads_dir"] / "task-file-double-enc"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    hashtag_name = "#CSL_highlight.mp4"
+    hashtag_file = task_dir / hashtag_name
+    hashtag_file.write_bytes(b"double encoded test bytes")
+
+    double_encoded = quote(quote(hashtag_name))
+    resp = await async_client.get(f"/api/files/task-file-double-enc/{double_encoded}")
+    assert resp.status_code == 200
+    assert resp.content == b"double encoded test bytes"
+    disp = resp.headers.get("content-disposition", "")
+    assert f'filename="{hashtag_name}"' in disp
+
+
+@pytest.mark.asyncio
 async def test_serve_existing_zip_bundle(
     async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
 ):
@@ -1365,5 +1414,169 @@ async def test_download_api_multi_item_unbundled_delivery(
             file_resp = await async_client.get(f"/api/files/{task_id}/{fi.filename}")
             assert file_resp.status_code == 200
             assert file_resp.headers.get("content-type") == "image/jpeg"
+
+
+@pytest.mark.asyncio
+async def test_twitter_download_with_hashtag_title_retains_hash_and_serves(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Regression Test (R1 & R2):
+
+    Verify Twitter video post whose text starts with '#' is properly handled through
+    the download API:
+    1. Retains the leading '#' in task.filename.
+    2. Constructs task.download_url with '%23' URL-encoding (no raw '#' that causes
+       browser fragment truncation / routing errors).
+    3. GET request to the resulting task.download_url succeeds (200 OK) and delivers
+       proper Content-Disposition with the leading '#' intact.
+    """
+    downloads_dir = temp_environment["downloads_dir"]
+    task_id = "task-twitter-hashtag-e2e"
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    hashtag_title = "#Umingle #Ometv #Monkeyapp #Omegle #CSL"
+    filename_on_disk = f"{hashtag_title}.mp4"
+    output_file = task_dir / filename_on_disk
+    output_file.write_bytes(b"twitter hashtag video content binary stream")
+
+    fake_result = DownloadResult(
+        task_id=task_id,
+        filename=filename_on_disk,
+        file_path=str(output_file),
+        file_size=output_file.stat().st_size,
+        download_url=f"/api/files/{task_id}/{quote(filename_on_disk)}",
+        is_zip=False,
+    )
+
+    with patch("app.services.router.download", new_callable=AsyncMock) as mock_dl:
+        mock_dl.return_value = fake_result
+
+        resp = await async_client.post(
+            "/api/download",
+            json={
+                "url": "https://x.com/CSLfrreac/status/2121343870013222933?a=UXOELjiUHqCARzEpBGU&s=20",
+                "format_id": "best",
+                "package_as_zip": False,
+                "metadata": {
+                    "id": "2121343870013222933",
+                    "title": hashtag_title,
+                    "platform": "twitter",
+                },
+            },
+        )
+        assert resp.status_code == 200
+        assigned_id = resp.json()["task_id"]
+
+        for _ in range(50):
+            task = progress_manager.get_task(assigned_id)
+            if task and task.status in ("completed", "error"):
+                break
+            await asyncio.sleep(0.05)
+
+        task = progress_manager.get_task(assigned_id)
+        assert task is not None
+        assert task.status == "completed"
+
+        # 1. Filename retains leading '#'
+        assert task.filename.startswith("#")
+        assert task.filename == filename_on_disk
+
+        # 2. Download URL uses '%23', NOT raw '#'
+        assert "#" not in task.download_url
+        assert "%23" in task.download_url
+        assert task.download_url.startswith(f"/api/files/{task_id}/%23")
+
+        # 3. Browser file retrieval via task.download_url succeeds without truncation/routing errors
+        file_resp = await async_client.get(task.download_url)
+        assert file_resp.status_code == 200
+        assert file_resp.headers.get("content-type") == "video/mp4"
+
+        disp = file_resp.headers.get("content-disposition", "")
+        assert "attachment" in disp.lower()
+        assert f'filename="{filename_on_disk}"' in disp
+        assert f"filename*=utf-8''{quote(filename_on_disk)}" in disp
+        assert file_resp.content == b"twitter hashtag video content binary stream"
+
+
+@pytest.mark.asyncio
+async def test_twitter_multi_file_download_with_hashtag_filenames(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Regression Test (R2):
+
+    Verify unbundled multi-item download with filenames containing/starting with '#'
+    preserves '#' in filenames and encodes '%23' in all download_urls.
+    """
+    downloads_dir = temp_environment["downloads_dir"]
+    task_id = "task-twitter-multi-hashtag"
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    file1 = task_dir / "#item_1.jpg"
+    file1.write_bytes(b"image 1 bytes")
+    file2 = task_dir / "#item_2.jpg"
+    file2.write_bytes(b"image 2 bytes")
+
+    files_info = [
+        DownloadFileInfo(
+            filename=file1.name,
+            file_path=str(file1),
+            file_size=file1.stat().st_size,
+            download_url=f"/api/files/{task_id}/{quote(file1.name)}",
+        ),
+        DownloadFileInfo(
+            filename=file2.name,
+            file_path=str(file2),
+            file_size=file2.stat().st_size,
+            download_url=f"/api/files/{task_id}/{quote(file2.name)}",
+        ),
+    ]
+
+    fake_result = DownloadResult(
+        task_id=task_id,
+        filename=files_info[0].filename,
+        file_path=files_info[0].file_path,
+        file_size=sum(f.file_size for f in files_info),
+        download_url=files_info[0].download_url,
+        is_zip=False,
+        files=files_info,
+    )
+
+    with patch("app.services.router.download", new_callable=AsyncMock) as mock_dl:
+        mock_dl.return_value = fake_result
+
+        resp = await async_client.post(
+            "/api/download",
+            json={
+                "url": "https://x.com/someuser/status/1234567890",
+                "package_as_zip": False,
+            },
+        )
+        assert resp.status_code == 200
+        assigned_id = resp.json()["task_id"]
+
+        for _ in range(50):
+            task = progress_manager.get_task(assigned_id)
+            if task and task.status in ("completed", "error"):
+                break
+            await asyncio.sleep(0.05)
+
+        task = progress_manager.get_task(assigned_id)
+        assert task is not None
+        assert task.status == "completed"
+        assert task.files is not None
+        assert len(task.files) == 2
+
+        for item in task.files:
+            assert item["filename"].startswith("#")
+            assert "#" not in item["download_url"]
+            assert "%23" in item["download_url"]
+
+            item_resp = await async_client.get(item["download_url"])
+            assert item_resp.status_code == 200
+            assert "attachment" in item_resp.headers.get("content-disposition", "").lower()
+            assert f'filename="{item["filename"]}"' in item_resp.headers.get("content-disposition", "")
+
 
 

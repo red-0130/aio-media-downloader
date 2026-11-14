@@ -2,6 +2,7 @@
 
 import asyncio
 import mimetypes
+import urllib.parse
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
@@ -175,6 +176,14 @@ async def get_downloaded_file(task_id: str, filename: str):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Filename cannot point to directory root",
             )
+        if not safe_file.exists() and "%" in clean_filename:
+            try:
+                unquoted_name = urllib.parse.unquote(clean_filename)
+                candidate = security.validate_safe_path(task_dir, unquoted_name)
+                if candidate.exists() and candidate.is_file():
+                    safe_file = candidate
+            except Exception:
+                pass
     except ValueError as err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -193,8 +202,19 @@ async def get_downloaded_file(task_id: str, filename: str):
         guessed, _ = mimetypes.guess_type(str(safe_file))
         media_type = guessed or "application/octet-stream"
 
+    # Format Content-Disposition according to RFC 6266 and RFC 5987:
+    # Include both standard filename="..." and filename*=utf-8''...
+    # This preserves the '#' in the filename while ensuring browsers correctly save the file.
+    encoded_filename = urllib.parse.quote(safe_file.name)
+    escaped_ascii = safe_file.name.replace("\\", "\\\\").replace('"', '\\"')
+    ascii_filename = escaped_ascii.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    content_disposition = (
+        f'attachment; filename="{ascii_filename}"; filename*=utf-8\'\'{encoded_filename}'
+    )
+
     return FileResponse(
         path=safe_file,
         media_type=media_type,
         filename=safe_file.name,
+        headers={"content-disposition": content_disposition},
     )

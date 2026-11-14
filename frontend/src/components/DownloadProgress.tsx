@@ -52,7 +52,8 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
 
   const handleDownloadClick = () => {
     if (downloadUrl) {
-      triggerBrowserDownload(downloadUrl, filename || undefined);
+      const safeUrl = downloadUrl.includes('#') ? downloadUrl.replace(/#/g, '%23') : downloadUrl;
+      triggerBrowserDownload(safeUrl, filename || undefined);
     }
   };
 
@@ -60,7 +61,8 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
     if (!files || files.length === 0) return;
     files.forEach((f, idx) => {
       setTimeout(() => {
-        triggerBrowserDownload(f.download_url, f.filename);
+        const safeUrl = f.download_url.includes('#') ? f.download_url.replace(/#/g, '%23') : f.download_url;
+        triggerBrowserDownload(safeUrl, f.filename);
       }, idx * 200);
     });
   };
@@ -232,7 +234,12 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
                     </div>
                     <button
                       type="button"
-                      onClick={() => triggerBrowserDownload(file.download_url, file.filename)}
+                      onClick={() => {
+                        const safeUrl = file.download_url.includes('#')
+                          ? file.download_url.replace(/#/g, '%23')
+                          : file.download_url;
+                        triggerBrowserDownload(safeUrl, file.filename);
+                      }}
                       className="px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/50 flex items-center gap-1.5 font-medium transition-colors flex-shrink-0"
                     >
                       <Download className="w-3.5 h-3.5" />

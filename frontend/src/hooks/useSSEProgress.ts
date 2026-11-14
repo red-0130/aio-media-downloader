@@ -200,7 +200,10 @@ export function useSSEProgress(
         callbacksRef.current.onComplete?.(data);
 
         if (callbacksRef.current.autoDownload && data.download_url) {
-          triggerBrowserDownload(data.download_url, data.filename);
+          const safeUrl = data.download_url.includes('#')
+            ? data.download_url.replace(/#/g, '%23')
+            : data.download_url;
+          triggerBrowserDownload(safeUrl, data.filename);
         }
       } catch (e) {
         console.error('Failed to parse complete event:', e);

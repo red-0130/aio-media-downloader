@@ -205,14 +205,30 @@ def _normalize_gallerydl_metadata(
     """Transform gallery-dl metadata list into unified InspectResponse."""
     first = items_data[0] if items_data else {}
     media_id = str(first.get("post_id") or first.get("id") or first.get("tweet_id") or "post")
-    uploader = (
+    author_val = (
         first.get("user")
         or first.get("username")
         or first.get("author")
         or first.get("account")
         or first.get("channel")
     )
-    title = first.get("description") or first.get("title") or f"{platform.capitalize()} post"
+    if isinstance(author_val, dict):
+        uploader = (
+            author_val.get("nick")
+            or author_val.get("name")
+            or author_val.get("username")
+            or None
+        )
+    elif author_val:
+        uploader = str(author_val)
+    else:
+        uploader = None
+    title = (
+        first.get("content")
+        or first.get("description")
+        or first.get("title")
+        or f"{platform.capitalize()} post"
+    )
     thumbnail = first.get("url") or first.get("thumbnail")
     date_val = first.get("date") or first.get("post_date") or first.get("timestamp")
     orig_name = (
@@ -648,7 +664,7 @@ async def download(
             filename=zip_filename,
             file_path=str(zip_path),
             file_size=file_size,
-            download_url=f"/api/files/{task_id}/{zip_filename}",
+            download_url=f"/api/files/{task_id}/{urllib.parse.quote(zip_filename)}",
             is_zip=True,
         )
 
@@ -659,7 +675,7 @@ async def download(
                 filename=pf.name,
                 file_path=str(pf),
                 file_size=pf.stat().st_size,
-                download_url=f"/api/files/{task_id}/{pf.name}",
+                download_url=f"/api/files/{task_id}/{urllib.parse.quote(pf.name)}",
             )
             for pf in formatted_files
         ]
@@ -680,6 +696,6 @@ async def download(
         filename=single_res.name,
         file_path=str(single_res),
         file_size=single_res.stat().st_size,
-        download_url=f"/api/files/{task_id}/{single_res.name}",
+        download_url=f"/api/files/{task_id}/{urllib.parse.quote(single_res.name)}",
         is_zip=False,
     )
