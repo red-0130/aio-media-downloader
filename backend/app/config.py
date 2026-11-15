@@ -25,6 +25,20 @@ class Settings(BaseModel):
             )
         )
     )
+    DEFAULT_COOKIES_DIR: Path = Field(
+        default_factory=lambda: Path(
+            os.getenv(
+                "DEFAULT_COOKIES_DIR",
+                os.getenv(
+                    "COOKIES_DIR",
+                    str(
+                        Path(os.getenv("BASE_DIR", str(Path(__file__).resolve().parent.parent.parent)))
+                        / "cookies"
+                    ),
+                ),
+            )
+        )
+    )
     DOWNLOADS_DIR: Path = Field(
         default_factory=lambda: Path(
             os.getenv(
@@ -35,6 +49,23 @@ class Settings(BaseModel):
                 ),
             )
         )
+    )
+
+    # Platform default cookie files from environment variables
+    INSTAGRAM_COOKIES_FILE: str | None = Field(
+        default_factory=lambda: os.getenv("INSTAGRAM_COOKIES_FILE", os.getenv("INSTAGRAM_COOKIE_FILE", None))
+    )
+    TWITTER_COOKIES_FILE: str | None = Field(
+        default_factory=lambda: os.getenv(
+            "TWITTER_COOKIES_FILE",
+            os.getenv("TWITTER_COOKIE_FILE", os.getenv("X_COOKIES_FILE", os.getenv("X_COOKIE_FILE", None))),
+        )
+    )
+    YOUTUBE_COOKIES_FILE: str | None = Field(
+        default_factory=lambda: os.getenv("YOUTUBE_COOKIES_FILE", os.getenv("YOUTUBE_COOKIE_FILE", None))
+    )
+    TIKTOK_COOKIES_FILE: str | None = Field(
+        default_factory=lambda: os.getenv("TIKTOK_COOKIES_FILE", os.getenv("TIKTOK_COOKIE_FILE", None))
     )
 
     # Proxy settings
@@ -51,8 +82,9 @@ class Settings(BaseModel):
     )
 
     def ensure_directories(self) -> None:
-        """Create cookies and downloads directories if they do not exist."""
+        """Create cookies, default cookies, and downloads directories if they do not exist."""
         self.COOKIES_DIR.mkdir(parents=True, exist_ok=True)
+        self.DEFAULT_COOKIES_DIR.mkdir(parents=True, exist_ok=True)
         self.DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 

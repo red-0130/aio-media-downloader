@@ -22,7 +22,13 @@ def _validate_platform(platform: str) -> str:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Path traversal or invalid characters detected in platform: '{platform}'",
         )
-    clean = platform.strip().lower()
+    try:
+        clean = cookie_manager.normalize_platform(platform)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
     if clean not in cookie_manager.SUPPORTED_PLATFORMS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -57,7 +63,7 @@ async def save_pasted_cookies(body: CookieUpdateRequest):
 
 @router.post("/cookies/upload")
 async def upload_cookie_file(
-    platform: str = Form(..., description="Target platform (instagram, twitter, youtube)"),
+    platform: str = Form(..., description="Target platform (instagram, twitter, youtube, tiktok)"),
     file: UploadFile = File(..., description="Netscape cookie file"),
 ):
     """Upload a Netscape cookies.txt file for a specific platform."""

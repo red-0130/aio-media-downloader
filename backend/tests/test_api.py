@@ -952,7 +952,8 @@ async def test_get_cookie_statuses(
     assert "instagram" in data
     assert "twitter" in data
     assert "youtube" in data
-    for plat in ("instagram", "twitter", "youtube"):
+    assert "tiktok" in data
+    for plat in ("instagram", "twitter", "youtube", "tiktok"):
         assert "exists" in data[plat]
         assert "valid" in data[plat]
 
@@ -1117,6 +1118,220 @@ async def test_cookie_platform_traversal_rejected(
         json={"platform": "../malicious", "content": "# Netscape HTTP Cookie File\n"},
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_post_paste_valid_tiktok_cookies(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify POST /api/settings/cookies saves valid Netscape cookie file for TikTok."""
+    netscape_content = (
+        "# Netscape HTTP Cookie File\n"
+        ".tiktok.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\ttt_sess_valid_12345\n"
+    )
+    resp = await async_client.post(
+        "/api/settings/cookies",
+        json={"platform": "tiktok", "content": netscape_content},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "saved"
+    assert data["platform"] == "tiktok"
+
+    cookie_path = temp_environment["cookies_dir"] / "tiktok.txt"
+    assert cookie_path.exists()
+    assert "tt_sess_valid_12345" in cookie_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_post_upload_tiktok_cookie_file(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify POST /api/settings/cookies/upload saves valid uploaded cookie file for TikTok."""
+    netscape_content = (
+        "# Netscape HTTP Cookie File\n"
+        ".tiktok.com\tTRUE\t/\tTRUE\t2000000000\tsid_tt\ttt_sid_valid_999\n"
+    )
+    files = {"file": ("tiktok.txt", netscape_content.encode("utf-8"), "text/plain")}
+    data = {"platform": "tiktok"}
+
+    resp = await async_client.post(
+        "/api/settings/cookies/upload",
+        data=data,
+        files=files,
+    )
+    assert resp.status_code == 200
+    res_data = resp.json()
+    assert res_data["status"] == "uploaded"
+    assert res_data["platform"] == "tiktok"
+
+    cookie_path = temp_environment["cookies_dir"] / "tiktok.txt"
+    assert cookie_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_tiktok_cookies_success(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify DELETE /api/settings/cookies/tiktok removes cookie file."""
+    cookie_path = temp_environment["cookies_dir"] / "tiktok.txt"
+    cookie_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    assert cookie_path.exists()
+
+    resp = await async_client.delete("/api/settings/cookies/tiktok")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "deleted"
+    assert not cookie_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_platform_aliases_supported_in_settings_api(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify platform aliases like 'x' and 'tt' are normalized across settings cookie endpoints."""
+    # 'x' alias for twitter
+    tw_netscape = (
+        "# Netscape HTTP Cookie File\n"
+        ".x.com\tTRUE\t/\tTRUE\t2000000000\tauth_token\ttw_token_alias\n"
+    )
+    resp = await async_client.post(
+        "/api/settings/cookies",
+        json={"platform": "x", "content": tw_netscape},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["platform"] == "twitter"
+    assert (temp_environment["cookies_dir"] / "twitter.txt").exists()
+
+    # Delete with 'x' alias
+    del_resp = await async_client.delete("/api/settings/cookies/x")
+    assert del_resp.status_code == 200
+    assert del_resp.json()["platform"] == "twitter"
+    assert not (temp_environment["cookies_dir"] / "twitter.txt").exists()
+
+    # 'tt' alias for tiktok
+    tt_netscape = (
+        "# Netscape HTTP Cookie File\n"
+        ".tiktok.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\ttt_alias_token\n"
+    )
+    resp = await async_client.post(
+        "/api/settings/cookies",
+        json={"platform": "tt", "content": tt_netscape},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["platform"] == "tiktok"
+    assert (temp_environment["cookies_dir"] / "tiktok.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_inspect_api_client_cookies_precedence(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify POST /api/inspect accepts client session cookies and passes to router."""
+    client_netscape = (
+        "# Netscape HTTP Cookie File\n"
+        ".tiktok.com\tTRUE\t/\tTRUE\t2000000000\tsessionid\tclient_tt_inspect\n"
+    )
+
+    with patch("app.services.router.inspect", new_callable=AsyncMock) as mock_insp:
+        mock_insp.return_value = InspectResponse(
+            id="123",
+            url="https://www.tiktok.com/@user/video/123",
+            platform="tiktok",
+            title="TikTok Video",
+            uploader="user",
+            media_type="video",
+            items=[],
+            formats=[],
+        )
+
+        resp = await async_client.post(
+            "/api/inspect",
+            json={
+                "url": "https://www.tiktok.com/@user/video/123",
+                "cookies": {"tiktok": client_netscape},
+            },
+        )
+        assert resp.status_code == 200
+        assert mock_insp.await_count == 1
+        _, kwargs = mock_insp.await_args
+        assert kwargs["cookies"] == {"tiktok": client_netscape}
+
+
+@pytest.mark.asyncio
+async def test_inspect_api_invalid_client_cookies_returns_400(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify POST /api/inspect rejects invalid Netscape client cookies with 400 Bad Request."""
+    resp = await async_client.post(
+        "/api/inspect",
+        json={
+            "url": "https://www.tiktok.com/@user/video/123",
+            "cookies": {"tiktok": "invalid_cookie_payload"},
+        },
+    )
+    assert resp.status_code == 400
+    assert "Invalid client cookie format" in resp.json().get("detail", "")
+
+
+@pytest.mark.asyncio
+async def test_download_api_client_cookies_precedence(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify POST /api/download accepts client session cookies and passes them to background worker."""
+    client_netscape = (
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tclient_yt_download\n"
+    )
+
+    with patch("app.services.router.download", new_callable=AsyncMock) as mock_dl:
+        mock_dl.return_value = DownloadResult(
+            task_id="task-prec",
+            filename="sample.mp4",
+            file_path="/tmp/sample.mp4",
+            file_size=2048,
+            download_url="/api/files/task-prec/sample.mp4",
+            is_zip=False,
+        )
+
+        resp = await async_client.post(
+            "/api/download",
+            json={
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "format_id": "best",
+                "cookies": {"youtube": client_netscape},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "task_id" in data
+        assert data["status"] == "queued"
+        task_id = data["task_id"]
+
+        for _ in range(50):
+            t = progress_manager.get_task(task_id)
+            if t and t.status == "completed":
+                break
+            await asyncio.sleep(0.02)
+
+        assert mock_dl.await_count == 1
+        _, kwargs = mock_dl.await_args
+        assert kwargs["cookies"] == {"youtube": client_netscape}
+
+
+@pytest.mark.asyncio
+async def test_download_api_invalid_client_cookies_returns_400(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify POST /api/download rejects invalid Netscape client cookies with 400 Bad Request."""
+    resp = await async_client.post(
+        "/api/download",
+        json={
+            "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "cookies": "bad_raw_cookie_string",
+        },
+    )
+    assert resp.status_code == 400
+    assert "Invalid client cookie format" in resp.json().get("detail", "")
 
 
 # ============================================================================

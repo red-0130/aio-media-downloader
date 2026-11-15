@@ -4,7 +4,9 @@ import concurrent.futures
 import os
 import stat
 import time
+from pathlib import Path
 import pytest
+from app.config import settings
 from app.services import cookie_manager
 
 VALID_NETSCAPE_INSTAGRAM = """# Netscape HTTP Cookie File
@@ -100,6 +102,7 @@ def test_get_all_cookie_statuses(temp_environment):
     assert "instagram" in statuses
     assert "twitter" in statuses
     assert "youtube" in statuses
+    assert "tiktok" in statuses
 
 
 def test_cookie_millisecond_timestamp_handling(temp_environment):
@@ -374,6 +377,314 @@ async def test_resolve_cookies_context_alias_and_casing_with_none_or_empty_entri
     async with cookie_manager.resolve_cookies_context("youtube", {"youtube": None, "YouTube": yt_netscape}) as p:
         assert p is not None
         assert "sid_yt_valid" in p.read_text(encoding="utf-8")
+
+
+VALID_NETSCAPE_TIKTOK = """# Netscape HTTP Cookie File
+.tiktok.com\tTRUE\t/\tTRUE\t{expiry}\tsessionid\ttt_sess_12345
+.tiktok.com\tTRUE\t/\tTRUE\t{expiry}\tsid_tt\ttt_sid_67890
+"""
+
+VALID_NETSCAPE_YOUTUBE = """# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tTRUE\t{expiry}\tSID\tyt_sid_12345
+.youtube.com\tTRUE\t/\tTRUE\t{expiry}\tLOGIN_INFO\tyt_login_67890
+"""
+
+VALID_NETSCAPE_TWITTER = """# Netscape HTTP Cookie File
+.twitter.com\tTRUE\t/\tTRUE\t{expiry}\tauth_token\ttw_auth_12345
+.twitter.com\tTRUE\t/\tTRUE\t{expiry}\tct0\ttw_ct0_67890
+"""
+
+
+def test_supported_platforms_and_aliases():
+    """Verify SUPPORTED_PLATFORMS contains all 4 platforms and normalize_platform handles aliases."""
+    for expected in ("instagram", "twitter", "youtube", "tiktok"):
+        assert expected in cookie_manager.SUPPORTED_PLATFORMS
+
+    # TikTok key cookies configured
+    assert "tiktok" in cookie_manager.KEY_COOKIES_BY_PLATFORM
+    for key in ("sessionid", "sessionid_ss", "sid_tt", "sid_guard"):
+        assert key in cookie_manager.KEY_COOKIES_BY_PLATFORM["tiktok"]
+
+    # Alias normalization
+    assert cookie_manager.normalize_platform("x") == "twitter"
+    assert cookie_manager.normalize_platform("X") == "twitter"
+    assert cookie_manager.normalize_platform("  twitter  ") == "twitter"
+    assert cookie_manager.normalize_platform("tt") == "tiktok"
+    assert cookie_manager.normalize_platform("TikTok") == "tiktok"
+    assert cookie_manager.normalize_platform("ig") == "instagram"
+    assert cookie_manager.normalize_platform("Instagram") == "instagram"
+    assert cookie_manager.normalize_platform("yt") == "youtube"
+    assert cookie_manager.normalize_platform("YouTube") == "youtube"
+
+    with pytest.raises(ValueError):
+        cookie_manager.normalize_platform("  ")
+
+
+def test_save_and_check_cookie_status_tiktok(temp_environment):
+    """Verify saving and checking cookie status for TikTok."""
+    future_ts = int(time.time()) + 86400 * 30
+    content = VALID_NETSCAPE_TIKTOK.format(expiry=future_ts)
+
+    status = cookie_manager.save_cookies("tiktok", content)
+    assert status.platform == "tiktok"
+    assert status.exists is True
+    assert status.valid is True
+    assert status.cookie_count == 2
+    assert status.expires_at is not None
+
+    refreshed = cookie_manager.check_cookie_status("tiktok")
+    assert refreshed.exists is True
+    assert refreshed.valid is True
+    assert refreshed.cookie_count == 2
+
+    path = cookie_manager.get_default_cookie_path("tiktok")
+    assert path is not None
+    assert path.exists()
+    assert path.name == "tiktok.txt"
+
+
+def test_expired_tiktok_cookie_detected(temp_environment):
+    """Verify expired TikTok cookie is recognized and get_default_cookie_path returns None."""
+    past_ts = int(time.time()) - 3600
+    content = VALID_NETSCAPE_TIKTOK.format(expiry=past_ts)
+
+    cookie_manager.save_cookies("tiktok", content)
+    status = cookie_manager.check_cookie_status("tiktok")
+
+    assert status.platform == "tiktok"
+    assert status.exists is True
+    assert status.valid is False
+    assert "expired" in (status.details or "").lower()
+
+    assert cookie_manager.get_default_cookie_path("tiktok") is None
+    assert cookie_manager.get_cookie_path_for_platform("tiktok") is None
+
+
+def test_delete_tiktok_cookies(temp_environment):
+    """Verify deleting TikTok cookies."""
+    future_ts = int(time.time()) + 86400
+    content = VALID_NETSCAPE_TIKTOK.format(expiry=future_ts)
+    cookie_manager.save_cookies("tiktok", content)
+
+    assert cookie_manager.get_cookie_file_path("tiktok").exists()
+    deleted = cookie_manager.delete_cookies("tiktok")
+    assert deleted is True
+    assert not cookie_manager.get_cookie_file_path("tiktok").exists()
+
+    status = cookie_manager.check_cookie_status("tiktok")
+    assert status.exists is False
+    assert status.valid is False
+
+
+def test_default_cookie_management_helpers(temp_environment, tmp_path):
+    """Verify get_default_cookie_path, load_default_cookie, configure_default_cookie, set_default_cookie_path, and validate_netscape_file."""
+    future_ts = int(time.time()) + 86400 * 7
+    content = VALID_NETSCAPE_TIKTOK.format(expiry=future_ts)
+
+    # Initially no cookie
+    assert cookie_manager.get_default_cookie_path("tiktok") is None
+    assert cookie_manager.load_default_cookie("tiktok") is None
+
+    # Save via load_default_cookie_file
+    ext_file = tmp_path / "custom_tiktok.txt"
+    ext_file.write_text(content, encoding="utf-8")
+
+    # validate_netscape_file on external file
+    is_valid, count, err = cookie_manager.validate_netscape_file(ext_file)
+    assert is_valid is True
+    assert count == 2
+    assert err is None
+
+    # validate_netscape_file on non-existent file
+    is_valid, count, err = cookie_manager.validate_netscape_file(tmp_path / "nonexistent.txt")
+    assert is_valid is False
+    assert count == 0
+    assert "does not exist" in (err or "")
+
+    # validate_netscape_file on corrupted file
+    corrupt_file = tmp_path / "corrupt.txt"
+    corrupt_file.write_text("random bad data that is not netscape", encoding="utf-8")
+    is_valid, count, err = cookie_manager.validate_netscape_file(corrupt_file)
+    assert is_valid is False
+    assert count == 0
+
+    # load_default_cookie_file
+    status = cookie_manager.load_default_cookie_file("tiktok", ext_file)
+    assert status.valid is True
+    assert status.cookie_count == 2
+    assert cookie_manager.get_default_cookie_path("tiktok") is not None
+    loaded_text = cookie_manager.load_default_cookie("tiktok")
+    assert loaded_text is not None
+    assert "tt_sess_12345" in loaded_text
+
+    # configure_default_cookie with content string
+    yt_content = VALID_NETSCAPE_YOUTUBE.format(expiry=future_ts)
+    yt_status = cookie_manager.configure_default_cookie("youtube", yt_content)
+    assert yt_status.valid is True
+    assert cookie_manager.get_default_cookie_path("youtube") is not None
+
+    # configure_default_cookie with external file Path
+    custom_tw_file = tmp_path / "custom_twitter.txt"
+    tw_content = VALID_NETSCAPE_TWITTER.format(expiry=future_ts)
+    custom_tw_file.write_text(tw_content, encoding="utf-8")
+    tw_status = cookie_manager.configure_default_cookie("twitter", custom_tw_file)
+    assert tw_status.valid is True
+    assert cookie_manager.get_default_cookie_path("twitter") == custom_tw_file.resolve()
+
+    # set_default_cookie_path and reset_runtime_default_cookies
+    cookie_manager.reset_runtime_default_cookies()
+    # After reset, twitter resolves back to primary storage
+    assert cookie_manager.get_default_cookie_path("twitter") != custom_tw_file.resolve()
+
+    # configure_default_cookie with invalid file raises ValueError
+    with pytest.raises(ValueError):
+        cookie_manager.configure_default_cookie("tiktok", corrupt_file)
+
+    with pytest.raises(ValueError):
+        cookie_manager.configure_default_cookie("tiktok", tmp_path / "does_not_exist.txt")
+
+
+def test_default_cookie_env_var_override(temp_environment, tmp_path, monkeypatch):
+    """Verify environment variables override default cookie file path."""
+    future_ts = int(time.time()) + 86400 * 5
+    custom_env_file = tmp_path / "env_tiktok_cookies.txt"
+    custom_env_file.write_text(VALID_NETSCAPE_TIKTOK.format(expiry=future_ts), encoding="utf-8")
+
+    monkeypatch.setattr(settings, "TIKTOK_COOKIES_FILE", str(custom_env_file))
+    cookie_manager.reset_runtime_default_cookies()
+
+    resolved = cookie_manager.get_default_cookie_path("tiktok")
+    assert resolved == custom_env_file.resolve()
+
+    # If env var points to expired cookie file, get_default_cookie_path returns None
+    expired_env_file = tmp_path / "expired_env_cookies.txt"
+    expired_env_file.write_text(VALID_NETSCAPE_TIKTOK.format(expiry=int(time.time()) - 500), encoding="utf-8")
+    monkeypatch.setattr(settings, "TIKTOK_COOKIES_FILE", str(expired_env_file))
+
+    assert cookie_manager.get_default_cookie_path("tiktok") is None
+
+
+def test_default_cookies_dir_resolution(temp_environment, tmp_path, monkeypatch):
+    """Verify DEFAULT_COOKIES_DIR is checked when cookie file is placed there."""
+    default_dir = tmp_path / "default_cookies"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(settings, "DEFAULT_COOKIES_DIR", default_dir)
+
+    future_ts = int(time.time()) + 86400 * 5
+    cookie_file = default_dir / "instagram.txt"
+    cookie_file.write_text(VALID_NETSCAPE_INSTAGRAM.format(expiry=future_ts), encoding="utf-8")
+
+    cookie_manager.reset_runtime_default_cookies()
+    resolved = cookie_manager.get_default_cookie_path("instagram")
+    assert resolved == cookie_file.resolve()
+
+
+def test_netscape_format_validation_strict(temp_environment, tmp_path):
+    """Verify strict validation of Netscape HTTP cookie format."""
+    # Valid header variants
+    h1 = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tvalid\n"
+    v1, c1, _ = cookie_manager.verify_netscape_content(h1)
+    assert v1 is True and c1 == 1
+
+    h2 = "# HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tvalid\n"
+    v2, c2, _ = cookie_manager.verify_netscape_content(h2)
+    assert v2 is True and c2 == 1
+
+    # #HttpOnly_ line
+    h3 = "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tvalid\n"
+    v3, c3, _ = cookie_manager.verify_netscape_content(h3)
+    assert v3 is True and c3 == 1
+
+    # Invalid rejections
+    for bad in (
+        "",
+        "   \n\t",
+        "<html><body>Not a cookie</body></html>",
+        '{"cookies": "bad"}',
+        "name=value; domain=foo.com",
+    ):
+        v, c, err = cookie_manager.verify_netscape_content(bad)
+        assert v is False
+        assert c == 0
+        assert err is not None
+
+    # Corrupted default cookie file on disk evaluates to valid=False and get_default_cookie_path is None
+    bad_file = settings.COOKIES_DIR / "tiktok.txt"
+    bad_file.write_text("invalid plain text without tabs or columns", encoding="utf-8")
+
+    st = cookie_manager.check_cookie_status("tiktok")
+    assert st.exists is True
+    assert st.valid is False
+
+    assert cookie_manager.get_default_cookie_path("tiktok") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,tmpl,token_def,token_client", [
+    ("instagram", VALID_NETSCAPE_INSTAGRAM, "def_ig_token", "client_ig_token"),
+    ("twitter", VALID_NETSCAPE_TWITTER, "def_tw_token", "client_tw_token"),
+    ("youtube", VALID_NETSCAPE_YOUTUBE, "def_yt_token", "client_yt_token"),
+    ("tiktok", VALID_NETSCAPE_TIKTOK, "def_tt_token", "client_tt_token"),
+])
+async def test_cookie_precedence_all_platforms(temp_environment, platform, tmpl, token_def, token_client):
+    """Verify 3-tier precedence for all 4 platforms:
+    Tier 1: Client session cookie overrides default.
+    Tier 2: Default cookie used when client cookie omitted.
+    Tier 3: Neither exists -> None.
+    """
+    future_ts = int(time.time()) + 99999
+    default_content = tmpl.format(expiry=future_ts).replace("12345", token_def)
+    client_content = tmpl.format(expiry=future_ts).replace("12345", token_client)
+
+    # Tier 3: Neither exists -> None
+    async with cookie_manager.resolve_cookies_context(platform, None) as path:
+        assert path is None
+
+    async with cookie_manager.resolve_cookies_context(platform, {platform: None}) as path:
+        assert path is None
+
+    # Set up default cookie
+    cookie_manager.save_cookies(platform, default_content)
+    default_path = cookie_manager.get_default_cookie_path(platform)
+    assert default_path is not None
+    assert default_path.exists()
+
+    # Tier 2: No client cookie provided -> default cookie used
+    async with cookie_manager.resolve_cookies_context(platform, None) as path:
+        assert path == default_path
+        assert token_def in path.read_text(encoding="utf-8")
+
+    async with cookie_manager.resolve_cookies_context(platform, {platform: None}) as path:
+        assert path == default_path
+        assert token_def in path.read_text(encoding="utf-8")
+
+    # Tier 1: Client cookie provided -> client cookie used, default ignored
+    async with cookie_manager.resolve_cookies_context(platform, {platform: client_content}) as path:
+        assert path is not None
+        assert path != default_path
+        assert path.name.startswith(f"client_cookies_{platform}_")
+        content_read = path.read_text(encoding="utf-8")
+        assert token_client in content_read
+        assert token_def not in content_read
+
+        # Default file on disk remains intact and unchanged
+        default_disk = default_path.read_text(encoding="utf-8")
+        assert token_def in default_disk
+        assert token_client not in default_disk
+
+    # Client temp file unlinked after context exit
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_client_cookie_invalid_format_raises_without_fallback(temp_environment):
+    """Verify invalid client cookies raise ValueError immediately without falling back to default cookies."""
+    future_ts = int(time.time()) + 99999
+    cookie_manager.save_cookies("youtube", VALID_NETSCAPE_YOUTUBE.format(expiry=future_ts))
+
+    with pytest.raises(ValueError, match="Invalid client cookie format"):
+        async with cookie_manager.resolve_cookies_context("youtube", {"youtube": "invalid_cookie_format"}):
+            pass
 
 
 

@@ -8,7 +8,7 @@ import pytest
 
 from app.models.download import DownloadRequest
 from app.models.inspect import InspectResponse
-from app.services import router
+from app.services import cookie_manager, router
 from app.services.router import classify_url
 from app.services.ytdlp_service import ExtractionError, AuthRequiredError
 from tests.conftest import load_fixture_json
@@ -567,6 +567,113 @@ def test_normalize_gallerydl_metadata_extracts_content_hashtag():
     assert res.title.startswith("#")
     assert res.title == "#Umingle #Ometv #Monkeyapp #Omegle #CSL"
     assert res.id == "2121343870013222933"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url,platform", [
+    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "youtube"),
+    ("https://www.instagram.com/reel/C12345/", "instagram"),
+    ("https://twitter.com/user/status/123456/video/1", "twitter"),
+    ("https://www.tiktok.com/@user/video/1234567890", "tiktok"),
+])
+async def test_router_inspect_cookie_precedence_all_platforms(temp_environment, url, platform):
+    """Verify router.inspect follows 3-tier cookie precedence across all 4 platforms:
+    Tier 1: Client session cookie overrides default.
+    Tier 2: Default cookie used when client cookie omitted.
+    Tier 3: Neither exists -> cookies_path is None.
+    """
+    canned = {"id": "media123", "title": "Precedence Title", "uploader": "precedence_user"}
+    future_ts = 2000000000
+    default_netscape = f"# Netscape HTTP Cookie File\n.{platform}.com\tTRUE\t/\tTRUE\t{future_ts}\tsessionid\tdefault_{platform}\n"
+    client_netscape = f"# Netscape HTTP Cookie File\n.{platform}.com\tTRUE\t/\tTRUE\t{future_ts}\tsessionid\tclient_{platform}\n"
+
+    with patch("app.services.ytdlp_service.inspect_url", new_callable=AsyncMock) as mock_ytdlp:
+        mock_ytdlp.return_value = canned
+
+        # Tier 3: No default cookie on disk, no client cookie -> cookies_path is None
+        await router.inspect(url, cookies=None)
+        assert mock_ytdlp.await_count == 1
+        _, kwargs = mock_ytdlp.await_args
+        assert kwargs["cookies_path"] is None
+
+        # Set up default cookie on disk
+        cookie_manager.save_cookies(platform, default_netscape)
+        default_path = cookie_manager.get_default_cookie_path(platform)
+        assert default_path is not None
+
+        # Tier 2: Default cookie on disk, no client cookie -> default cookie path passed
+        mock_ytdlp.reset_mock()
+        await router.inspect(url, cookies=None)
+        assert mock_ytdlp.await_count == 1
+        _, kwargs = mock_ytdlp.await_args
+        assert kwargs["cookies_path"] == default_path
+
+        # Tier 1: Default cookie on disk, client cookie provided -> temporary client cookie path passed
+        mock_ytdlp.reset_mock()
+        await router.inspect(url, cookies={platform: client_netscape})
+        assert mock_ytdlp.await_count == 1
+        _, kwargs = mock_ytdlp.await_args
+        resolved_cookie_path = kwargs["cookies_path"]
+        assert resolved_cookie_path is not None
+        assert resolved_cookie_path != default_path
+        assert f"client_cookies_{platform}_" in str(resolved_cookie_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url,platform", [
+    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "youtube"),
+    ("https://www.instagram.com/reel/C12345/", "instagram"),
+    ("https://twitter.com/user/status/123456/video/1", "twitter"),
+    ("https://www.tiktok.com/@user/video/1234567890", "tiktok"),
+])
+async def test_router_download_cookie_precedence_all_platforms(temp_environment, url, platform):
+    """Verify router.download follows 3-tier cookie precedence across all 4 platforms."""
+    task_id = f"test-prec-dl-{platform}"
+    task_dir = temp_environment["downloads_dir"] / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    fake_file = task_dir / "media.mp4"
+    fake_file.write_bytes(b"dummy")
+
+    future_ts = 2000000000
+    default_netscape = f"# Netscape HTTP Cookie File\n.{platform}.com\tTRUE\t/\tTRUE\t{future_ts}\tsessionid\tdefault_{platform}\n"
+    client_netscape = f"# Netscape HTTP Cookie File\n.{platform}.com\tTRUE\t/\tTRUE\t{future_ts}\tsessionid\tclient_{platform}\n"
+
+    with patch("app.services.ytdlp_service.download_media", new_callable=AsyncMock) as mock_down:
+        mock_down.return_value = [fake_file]
+
+        # Tier 3: Neither exists -> cookies_path is None
+        fake_file.write_bytes(b"dummy")
+        req3 = DownloadRequest(url=url, format_id="best", package_as_zip=False, cookies=None)
+        await router.download(task_id, req3)
+        assert mock_down.await_count == 1
+        _, kwargs = mock_down.await_args
+        assert kwargs["cookies_path"] is None
+
+        # Set up default cookie
+        cookie_manager.save_cookies(platform, default_netscape)
+        default_path = cookie_manager.get_default_cookie_path(platform)
+        assert default_path is not None
+
+        # Tier 2: Default exists, client omitted -> default cookie passed
+        fake_file.write_bytes(b"dummy")
+        mock_down.reset_mock()
+        req2 = DownloadRequest(url=url, format_id="best", package_as_zip=False, cookies=None)
+        await router.download(task_id, req2)
+        assert mock_down.await_count == 1
+        _, kwargs = mock_down.await_args
+        assert kwargs["cookies_path"] == default_path
+
+        # Tier 1: Client provided -> client cookie passed, default ignored
+        fake_file.write_bytes(b"dummy")
+        mock_down.reset_mock()
+        req1 = DownloadRequest(url=url, format_id="best", package_as_zip=False, cookies={platform: client_netscape})
+        await router.download(task_id, req1)
+        assert mock_down.await_count == 1
+        _, kwargs = mock_down.await_args
+        resolved_path = kwargs["cookies_path"]
+        assert resolved_path is not None
+        assert resolved_path != default_path
+        assert f"client_cookies_{platform}_" in str(resolved_path)
 
 
 
