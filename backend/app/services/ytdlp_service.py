@@ -62,6 +62,18 @@ def get_extractor_args_for_url(url: str) -> list[str]:
 
 def classify_error(stderr_text: str) -> Exception:
     """Analyze stderr or extractor output and return appropriate specialized exception."""
+    if settings.SOCKS5_PROXY:
+        stderr_text = stderr_text.replace(settings.SOCKS5_PROXY, "[REDACTED_PROXY]")
+        try:
+            import urllib.parse
+            parsed = urllib.parse.urlsplit(settings.SOCKS5_PROXY)
+            if parsed.netloc and parsed.netloc in stderr_text:
+                stderr_text = stderr_text.replace(parsed.netloc, "[REDACTED_PROXY]")
+            if parsed.password and parsed.password in stderr_text:
+                stderr_text = stderr_text.replace(parsed.password, "[REDACTED]")
+        except Exception:
+            pass
+
     text_lower = stderr_text.lower()
 
     # 1. Age-restricted or private media (strictly requires user account cookies)

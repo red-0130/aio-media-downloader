@@ -83,13 +83,19 @@ def get_proxy() -> str | None:
     return settings.SOCKS5_PROXY
 
 
-def get_proxy_config() -> ProxyConfig:
-    """Return structured proxy configuration indicating current value and source."""
+def get_proxy_config(client_facing: bool = False) -> ProxyConfig:
+    """Return structured proxy configuration indicating current value and source.
+
+    When client_facing is True, sensitive default proxy URLs (e.g. from environment)
+    are masked (proxy=None) to prevent leaking internal SOCKS5 configuration to clients.
+    """
     global _runtime_proxy, _runtime_set
     if _runtime_set and _runtime_proxy is not None:
         return ProxyConfig(proxy=_runtime_proxy, source="runtime")
 
     if not _runtime_set and settings.SOCKS5_PROXY:
+        if client_facing:
+            return ProxyConfig(proxy=None, source="env")
         return ProxyConfig(proxy=settings.SOCKS5_PROXY, source="env")
 
     if _runtime_set and _runtime_proxy is None:

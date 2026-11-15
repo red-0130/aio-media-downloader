@@ -226,13 +226,13 @@ def create_test_app() -> FastAPI:
     # ========================================================================
     @app.get("/api/settings/proxy", response_model=ProxyConfig)
     async def get_proxy_settings():
-        return proxy_manager.get_proxy_config()
+        return proxy_manager.get_proxy_config(client_facing=True)
 
     @app.post("/api/settings/proxy", response_model=ProxyConfig)
     async def update_proxy_settings(body: ProxyUpdateRequest):
         try:
             proxy_manager.set_proxy(body.proxy)
-            return proxy_manager.get_proxy_config()
+            return proxy_manager.get_proxy_config(client_facing=True)
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err))
 

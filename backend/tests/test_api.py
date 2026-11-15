@@ -1187,6 +1187,46 @@ async def test_post_null_proxy_clears_proxy(async_client: httpx.AsyncClient):
     assert data["proxy"] is None
 
 
+@pytest.mark.asyncio
+async def test_get_proxy_default_socks5_not_leaked(
+    async_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify GET /api/settings/proxy masks default proxy and raw URL/credentials are completely absent."""
+    secret_proxy = "socks5://leak_user:leak_pass@corp.private.leak:1080"
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", secret_proxy)
+    proxy_manager.reset_runtime_proxy()
+
+    resp = await async_client.get("/api/settings/proxy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["proxy"] is None
+    assert data["source"] == "env"
+    assert "leak_user" not in resp.text
+    assert "leak_pass" not in resp.text
+    assert "corp.private.leak" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_post_null_proxy_with_default_env_does_not_leak_default_proxy(
+    async_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify POST /api/settings/proxy clearing runtime proxy never exposes default SOCKS5 URL."""
+    secret_proxy = "socks5://leak_user:leak_pass@corp.private.leak:1080"
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", secret_proxy)
+    proxy_manager.set_proxy("socks5://temp-runtime:9050")
+
+    resp = await async_client.post(
+        "/api/settings/proxy",
+        json={"proxy": None},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["proxy"] is None
+    assert "leak_user" not in resp.text
+    assert "leak_pass" not in resp.text
+    assert "corp.private.leak" not in resp.text
+
+
 # ============================================================================
 # Group G: Lifespan & SPA Fallback
 # ============================================================================

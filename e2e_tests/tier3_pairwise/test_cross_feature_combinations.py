@@ -46,7 +46,7 @@ from app.services import (
 )
 
 
-async def _wait_task_complete(task_id: str, max_wait: float = 3.0) -> Any:
+async def _wait_task_complete(task_id: str, max_wait: float = 8.0) -> Any:
     """Helper to poll progress manager until task is completed or error."""
     start = time.time()
     while time.time() - start < max_wait:

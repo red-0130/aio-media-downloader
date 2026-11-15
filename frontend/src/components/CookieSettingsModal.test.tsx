@@ -20,7 +20,11 @@ describe('CookieSettingsModal Component (R2 Acceptance Criteria)', () => {
   });
   queryClient.setQueryData(['settings', 'proxy'], { proxy: null, source: 'default' });
 
-  const renderModal = (props: { isOpen: boolean; defaultPlatform?: string }) => {
+  const renderModal = (props: {
+    isOpen: boolean;
+    defaultPlatform?: string;
+    defaultTab?: 'cookies' | 'proxy';
+  }) => {
     return renderToString(
       React.createElement(
         QueryClientProvider,
@@ -29,6 +33,7 @@ describe('CookieSettingsModal Component (R2 Acceptance Criteria)', () => {
           isOpen: props.isOpen,
           onClose: () => {},
           defaultPlatform: props.defaultPlatform,
+          defaultTab: props.defaultTab,
         })
       )
     );
@@ -100,5 +105,42 @@ describe('CookieSettingsModal Component (R2 Acceptance Criteria)', () => {
     expect(html).toContain('Session Active');
     expect(html).toContain('cookies)');
     clearAllSessionCookies();
+  });
+
+  it('renders proxy tab with sanitized badge and generic placeholder when server proxy is configured', () => {
+    queryClient.setQueryData(['settings', 'proxy'], { proxy: null, source: 'env' });
+    const html = renderModal({ isOpen: true, defaultTab: 'proxy' });
+
+    expect(html).toContain('Proxy Configuration');
+    expect(html).toContain('Source: Server Default (configured)');
+    expect(html).toContain('placeholder="e.g. socks5://host:port or http://host:port"');
+    expect(html).not.toContain('socks5://127.0.0.1:9050');
+    expect(html).not.toContain('Server fallback:');
+  });
+
+  it('never leaks server default SOCKS5 URL or credentials in UI even if proxy property is populated', () => {
+    queryClient.setQueryData(['settings', 'proxy'], {
+      proxy: 'socks5://secret_user:secret_pass@super-secret-proxy.corp:1080',
+      source: 'env',
+    });
+    const html = renderModal({ isOpen: true, defaultTab: 'proxy' });
+
+    expect(html).toContain('Source: Server Default (configured)');
+    expect(html).toContain('placeholder="e.g. socks5://host:port or http://host:port"');
+    expect(html).not.toContain('secret_user');
+    expect(html).not.toContain('secret_pass');
+    expect(html).not.toContain('super-secret-proxy.corp');
+    expect(html).not.toContain('socks5://secret_user');
+    expect(html).not.toContain('socks5://127.0.0.1:9050');
+    expect(html).not.toContain('Server fallback:');
+  });
+
+  it('renders Source: Server Default (none) when no server or session proxy is set', () => {
+    queryClient.setQueryData(['settings', 'proxy'], { proxy: null, source: 'none' });
+    const html = renderModal({ isOpen: true, defaultTab: 'proxy' });
+
+    expect(html).toContain('Source: Server Default (none)');
+    expect(html).toContain('placeholder="e.g. socks5://host:port or http://host:port"');
+    expect(html).not.toContain('socks5://127.0.0.1:9050');
   });
 });

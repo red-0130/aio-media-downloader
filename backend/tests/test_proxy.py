@@ -24,6 +24,11 @@ def test_proxy_env_fallback(monkeypatch):
     assert cfg.proxy == "socks5://proxy.example.com:1080"
     assert cfg.source == "env"
 
+    # Client-facing call must mask default proxy URL
+    client_cfg = proxy_manager.get_proxy_config(client_facing=True)
+    assert client_cfg.proxy is None
+    assert client_cfg.source == "env"
+
 
 def test_proxy_runtime_override(monkeypatch):
     monkeypatch.setattr(settings, "SOCKS5_PROXY", "socks5://env-proxy.com:1080")
@@ -41,11 +46,13 @@ def test_proxy_runtime_override(monkeypatch):
     proxy_manager.set_proxy(None)
     assert proxy_manager.get_proxy() is None
     assert proxy_manager.get_proxy_config().source == "runtime"
+    assert proxy_manager.get_proxy_config(client_facing=True).proxy is None
 
     # Reset runtime reverts to env
     proxy_manager.reset_runtime_proxy()
     assert proxy_manager.get_proxy() == "socks5://env-proxy.com:1080"
     assert proxy_manager.get_proxy_config().source == "env"
+    assert proxy_manager.get_proxy_config(client_facing=True).proxy is None
 
 
 def test_proxy_url_validation():

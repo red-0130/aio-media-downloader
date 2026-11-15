@@ -21,6 +21,30 @@ def test_proxy_configured_via_env_var(isolated_env: dict[str, Path], monkeypatch
     assert cfg.proxy == test_proxy
     assert cfg.source == "env"
 
+    # Client-facing config must mask default proxy URL
+    cfg_client = proxy_manager.get_proxy_config(client_facing=True)
+    assert cfg_client.proxy is None
+    assert cfg_client.source == "env"
+
+
+@pytest.mark.asyncio
+async def test_default_socks5_proxy_not_leaked_via_api(
+    async_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify GET /api/settings/proxy masks default proxy and leaks no credentials/URL."""
+    secret_proxy = "socks5://sec_user:sec_pass@secret.corp.internal:1080"
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", secret_proxy)
+    proxy_manager.reset_runtime_proxy()
+
+    resp = await async_client.get("/api/settings/proxy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["proxy"] is None
+    assert data["source"] == "env"
+    assert "sec_user" not in resp.text
+    assert "sec_pass" not in resp.text
+    assert "secret.corp.internal" not in resp.text
+
 
 @pytest.mark.asyncio
 async def test_proxy_configured_via_api_settings(async_client: httpx.AsyncClient):

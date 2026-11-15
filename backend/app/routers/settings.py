@@ -111,7 +111,7 @@ async def delete_platform_cookies(platform: str):
 @router.get("/proxy", response_model=ProxyConfig)
 async def get_proxy_configuration():
     """Retrieve current effective SOCKS5 / HTTP proxy configuration."""
-    return proxy_manager.get_proxy_config()
+    return proxy_manager.get_proxy_config(client_facing=True)
 
 
 @router.post("/proxy", response_model=ProxyConfig)
@@ -119,6 +119,6 @@ async def set_proxy_configuration(body: ProxyUpdateRequest):
     """Update runtime SOCKS5 / HTTP proxy configuration."""
     try:
         proxy_manager.set_proxy(body.proxy)
-        return proxy_manager.get_proxy_config()
+        return proxy_manager.get_proxy_config(client_facing=True)
     except ValueError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))

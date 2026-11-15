@@ -38,6 +38,7 @@ export interface CookieSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   defaultPlatform?: string;
+  defaultTab?: 'cookies' | 'proxy';
 }
 
 interface PlatformGuide {
@@ -125,8 +126,15 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
   isOpen,
   onClose,
   defaultPlatform,
+  defaultTab = 'cookies',
 }) => {
-  const [activeTab, setActiveTab] = useState<'cookies' | 'proxy'>('cookies');
+  const [activeTab, setActiveTab] = useState<'cookies' | 'proxy'>(defaultTab);
+
+  useEffect(() => {
+    if (isOpen && defaultTab) {
+      setActiveTab(defaultTab);
+    }
+  }, [isOpen, defaultTab]);
   const [pastingPlatform, setPastingPlatform] = useState<string | null>(defaultPlatform || null);
   const [pastedContent, setPastedContent] = useState('');
   const [proxyInput, setProxyInput] = useState('');
@@ -711,8 +719,8 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
                     <span className="px-2 py-0.5 rounded-full font-mono font-medium text-[11px] bg-slate-800 text-slate-300 border border-slate-700">
                       {sessionProxy
                         ? 'Source: Client Session (localStorage)'
-                        : serverProxyConfig?.proxy
-                          ? `Source: Server Default (${serverProxyConfig.proxy})`
+                        : serverProxyConfig?.source === 'env' || serverProxyConfig?.proxy
+                          ? 'Source: Server Default (configured)'
                           : 'Source: Server Default (none)'}
                     </span>
                   </div>
@@ -725,11 +733,7 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
                       type="text"
                       value={proxyInput}
                       onChange={(e) => setProxyInput(e.target.value)}
-                      placeholder={
-                        serverProxyConfig?.proxy
-                          ? `Server fallback: ${serverProxyConfig.proxy}`
-                          : 'socks5://127.0.0.1:9050'
-                      }
+                      placeholder="e.g. socks5://host:port or http://host:port"
                       className="w-full py-2.5 px-3 rounded-xl bg-slate-900 border border-slate-700 text-sm font-mono text-slate-200 placeholder-slate-500 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500/20"
                     />
                     <p className="text-[11px] text-slate-400">
