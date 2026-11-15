@@ -312,11 +312,12 @@ A unified multi-stage `Dockerfile` packages the entire application into a single
 - **Stage 1 (Frontend Build)**: Uses `docker.io/oven/bun:1-slim` to install npm dependencies and compile the Vite SPA into static assets (`frontend/dist`).
 - **Stage 2 (Runtime Container)**:
   - Base: `docker.io/library/python:3.12-slim`.
-  - Installs system `ffmpeg`, `ca-certificates`.
+  - Installs system `ca-certificates`, `curl`, and `nginx-light`.
   - Installs `uv` (`ghcr.io/astral-sh/uv:latest`) and synchronizes backend virtualenv.
   - Copies compiled frontend assets to `backend/app/static`.
-  - FastAPI serves `/api/*` endpoints and serves `static/` for all frontend routes (SPA fallback).
-  - Exposes port `8000`.
+  - Internal isolation: FastAPI backend binds internally to a Unix domain socket (`/tmp/uvicorn.sock`), keeping the backend API unexposed to external networks.
+  - Reverse proxy: Nginx acts as the single public web entrypoint on port `8000`, serving the frontend SPA directly and reverse-proxying `/api/*` (with SSE streaming support) and docs to the isolated backend socket.
+  - Exposes port `8000` (web entrypoint only; backend API is not exposed on an external port).
 
 ### Running with Docker or Podman:
 ```bash

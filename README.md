@@ -55,7 +55,7 @@
 - **Post-Processing with FFmpeg**: Automatic remuxing of split video/audio streams into universal MP4 containers, or lossless extraction of audio into MP3, M4A, or WAV with metadata tags.
 - **In-App Cookie & Proxy Management**: Built-in Settings modal lets you upload or paste Netscape cookie files for authenticated platforms (e.g., Instagram Stories, private accounts, Twitter/X rate limits) and configure SOCKS5 proxies without restarting the server.
 - **Zero Disk Bloat (Automatic TTL Cleaner)**: Background asynchronous cleaner continuously purges completed and abandoned download directories older than 60 minutes (configurable).
-- **Single-Container Deployment**: Self-contained multi-stage Docker build packaging both the Vite React SPA and FastAPI backend into a single image.
+- **Single-Container Deployment**: Self-contained multi-stage Docker build with internal process isolation (FastAPI backend bound internally to a Unix domain socket, Nginx reverse proxy serving static assets and proxying requests on port 8000).
 
 ---
 
