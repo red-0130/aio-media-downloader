@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { ApiError, extractErrorMessage, formatDetailItem, triggerBrowserDownload } from './api';
+import { ApiError, extractErrorMessage, formatDetailItem, getSafeDownloadUrl, triggerBrowserDownload } from './api';
 
 describe('api: formatDetailItem', () => {
   it('returns strings as-is', () => {
@@ -124,6 +124,27 @@ describe('api: ApiError flags and properties', () => {
     expect(err500.isAuthRequired).toBe(false);
     expect(err500.isRateLimit).toBe(false);
     expect(err500.isValidationError).toBe(false);
+  });
+});
+
+describe('api: getSafeDownloadUrl', () => {
+  it('encodes # characters as %23', () => {
+    expect(getSafeDownloadUrl('/api/files/task-1/#video.mp4')).toBe('/api/files/task-1/%23video.mp4');
+    expect(getSafeDownloadUrl('/api/files/task-1/#tag1_#tag2.zip')).toBe('/api/files/task-1/%23tag1_%23tag2.zip');
+  });
+
+  it('keeps URLs without # unchanged', () => {
+    expect(getSafeDownloadUrl('/api/files/task-1/normal_video.mp4')).toBe('/api/files/task-1/normal_video.mp4');
+  });
+
+  it('preserves full http/https URLs and encodes # in them', () => {
+    expect(getSafeDownloadUrl('https://example.com/files/download.mp4')).toBe('https://example.com/files/download.mp4');
+    expect(getSafeDownloadUrl('https://example.com/files/#hash.mp4')).toBe('https://example.com/files/%23hash.mp4');
+    expect(getSafeDownloadUrl('http://cdn.local:8000/media.mp3')).toBe('http://cdn.local:8000/media.mp3');
+  });
+
+  it('keeps already encoded %23 URLs intact', () => {
+    expect(getSafeDownloadUrl('/api/files/task-1/%23already_encoded.mp4')).toBe('/api/files/task-1/%23already_encoded.mp4');
   });
 });
 

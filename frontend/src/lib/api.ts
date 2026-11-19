@@ -365,9 +365,10 @@ export async function setProxyConfig(req: ProxyUpdateRequest): Promise<ProxyConf
 }
 
 /**
- * Trigger browser file download from completed download_url.
+ * Safely format and resolve download URL, encoding '#' as '%23'
+ * and prepending BASE_URL if relative.
  */
-export function triggerBrowserDownload(downloadUrl: string, filename?: string): void {
+export function getSafeDownloadUrl(downloadUrl: string): string {
   // Ensure '#' is URL-encoded as '%23' in the download URL to prevent the browser
   // from interpreting '#' as a client-side URL fragment identifier, which causes
   // truncation and server routing errors.
@@ -375,7 +376,14 @@ export function triggerBrowserDownload(downloadUrl: string, filename?: string): 
   if (safeUrl.includes('#')) {
     safeUrl = safeUrl.replace(/#/g, '%23');
   }
-  const fullUrl = safeUrl.startsWith('http') ? safeUrl : `${BASE_URL}${safeUrl}`;
+  return safeUrl.startsWith('http') ? safeUrl : `${BASE_URL}${safeUrl}`;
+}
+
+/**
+ * Trigger browser file download from completed download_url.
+ */
+export function triggerBrowserDownload(downloadUrl: string, filename?: string): void {
+  const fullUrl = getSafeDownloadUrl(downloadUrl);
   const anchor = document.createElement('a');
   anchor.href = fullUrl;
   if (filename) {

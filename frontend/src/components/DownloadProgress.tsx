@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import type { DownloadFileItem, TaskStatus } from '../types/api';
 import { cn, formatBytes } from '../lib/utils';
-import { triggerBrowserDownload } from '../lib/api';
+import { getSafeDownloadUrl, triggerBrowserDownload } from '../lib/api';
 
 export interface DownloadProgressProps {
   status: TaskStatus | 'idle';
@@ -49,13 +49,6 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
   onCancel,
 }) => {
   const percent = Math.min(100, Math.max(0, Math.round(progress * 10) / 10));
-
-  const handleDownloadClick = () => {
-    if (downloadUrl) {
-      const safeUrl = downloadUrl.includes('#') ? downloadUrl.replace(/#/g, '%23') : downloadUrl;
-      triggerBrowserDownload(safeUrl, filename || undefined);
-    }
-  };
 
   const handleDownloadAllClick = () => {
     if (!files || files.length === 0) return;
@@ -232,19 +225,14 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
                         </span>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const safeUrl = file.download_url.includes('#')
-                          ? file.download_url.replace(/#/g, '%23')
-                          : file.download_url;
-                        triggerBrowserDownload(safeUrl, file.filename);
-                      }}
+                    <a
+                      href={getSafeDownloadUrl(file.download_url)}
+                      download={file.filename || undefined}
                       className="px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/50 flex items-center gap-1.5 font-medium transition-colors flex-shrink-0"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Save</span>
-                    </button>
+                    </a>
                   </div>
                 ))}
               </div>
@@ -272,19 +260,20 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
                 </div>
               </div>
 
-              {/* Direct Download Button */}
-              <button
-                type="button"
-                onClick={handleDownloadClick}
+              {/* Direct Download Link */}
+              <a
+                href={downloadUrl ? getSafeDownloadUrl(downloadUrl) : undefined}
+                download={filename || undefined}
                 className={cn(
                   'px-5 py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 flex-shrink-0',
                   'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-600/30',
-                  'hover:from-emerald-500 hover:to-emerald-600 hover:shadow-emerald-600/50 active:scale-95'
+                  'hover:from-emerald-500 hover:to-emerald-600 hover:shadow-emerald-600/50 active:scale-95',
+                  !downloadUrl && 'pointer-events-none opacity-50'
                 )}
               >
                 <Download className="w-4 h-4" />
                 <span>Save File</span>
-              </button>
+              </a>
             </div>
           )}
         </div>
