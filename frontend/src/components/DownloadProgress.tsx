@@ -1,19 +1,30 @@
 import React from 'react';
 import {
+  Card,
+  VStack,
+  HStack,
+  Heading,
+  Text,
+  Badge,
+  Button,
+  ProgressBar,
+  Banner,
+  Link,
+} from '@astryxdesign/core';
+import {
   Download,
   CheckCircle2,
   AlertTriangle,
   RotateCcw,
   XCircle,
-  HardDrive,
   Activity,
   Timer,
   FileCheck,
   Files,
 } from 'lucide-react';
 import type { DownloadFileItem, TaskStatus } from '../types/api';
-import { cn, formatBytes } from '../lib/utils';
-import { getSafeDownloadUrl, triggerBrowserDownload } from '../lib/api';
+import { formatBytes } from '../lib/utils';
+import { triggerBrowserDownload } from '../lib/api';
 
 export interface DownloadProgressProps {
   status: TaskStatus | 'idle';
@@ -31,6 +42,10 @@ export interface DownloadProgressProps {
   onReset?: () => void;
   onCancel?: () => void;
 }
+
+const encodeUrlForAnchor = (url: string): string => {
+  return url.includes('#') ? url.replace(/#/g, '%23') : url;
+};
 
 export const DownloadProgress: React.FC<DownloadProgressProps> = ({
   status,
@@ -54,245 +69,196 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
     if (!files || files.length === 0) return;
     files.forEach((f, idx) => {
       setTimeout(() => {
-        const safeUrl = f.download_url.includes('#') ? f.download_url.replace(/#/g, '%23') : f.download_url;
+        const safeUrl = encodeUrlForAnchor(f.download_url);
         triggerBrowserDownload(safeUrl, f.filename);
       }, idx * 200);
     });
   };
 
+  const isPostProcessing = status === 'postprocessing';
+  const hasMultipleFiles = files && files.length > 1;
+
   return (
-    <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-5 animate-in fade-in duration-300">
-      {/* Header Row */}
-      <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-        <div className="flex items-center gap-2">
-          {isComplete ? (
-            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-          ) : status === 'error' ? (
-            <AlertTriangle className="w-5 h-5 text-rose-400" />
-          ) : (
-            <Activity className="w-5 h-5 text-indigo-400 animate-pulse" />
-          )}
+    <Card padding={4} elevation="high" width="100%">
+      <VStack gap={4} width="100%">
+        {/* Header Telemetry Status Bar */}
+        <HStack gap={2} align="center" justify="between" width="100%" wrap="wrap">
+          <HStack gap={2} align="center">
+            {isComplete ? (
+              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            ) : status === 'error' ? (
+              <AlertTriangle className="w-5 h-5 text-rose-400" />
+            ) : (
+              <Activity className="w-5 h-5 text-indigo-400 animate-pulse" />
+            )}
 
-          <h3 className="text-base font-semibold text-slate-100">
-            {isComplete
-              ? 'Download Ready'
-              : status === 'error'
-              ? 'Task Failed'
-              : status === 'postprocessing'
-              ? 'Post-Processing Media...'
-              : 'Downloading Media...'}
-          </h3>
-        </div>
+            <Heading level={3}>
+              {isComplete
+                ? 'Download Ready'
+                : status === 'error'
+                ? 'Task Failed'
+                : isPostProcessing
+                ? 'Post-Processing Media...'
+                : 'Downloading Media...'}
+            </Heading>
+          </HStack>
 
-        {/* Action Controls */}
-        <div className="flex items-center gap-2">
-          {isDownloading && onCancel && (
-            <button
-              type="button"
-              onClick={onCancel}
-              className="text-xs px-2.5 py-1 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 flex items-center gap-1 transition-colors"
-            >
-              <XCircle className="w-3.5 h-3.5 text-slate-400" />
-              <span>Cancel</span>
-            </button>
-          )}
-
-          {(isComplete || status === 'error') && onReset && (
-            <button
-              type="button"
-              onClick={onReset}
-              className="text-xs px-2.5 py-1 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 flex items-center gap-1 transition-colors"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>New Download</span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* In-Flight Progress State */}
-      {isDownloading && (
-        <div className="space-y-3">
-          {/* Progress Bar */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-300 font-medium capitalize">
-                {status === 'postprocessing' ? 'FFmpeg Conversion / Packaging' : 'Download Progress'}
-              </span>
-              <span className="font-mono text-indigo-300 font-semibold">{percent}%</span>
-            </div>
-
-            <div className="h-3 w-full bg-slate-950 rounded-full overflow-hidden border border-slate-800 p-0.5">
-              <div
-                className={cn(
-                  'h-full rounded-full transition-[width] duration-500 ease-out shadow-sm',
-                  status === 'postprocessing'
-                    ? 'bg-gradient-to-r from-amber-500 to-indigo-500 animate-pulse'
-                    : 'bg-gradient-to-r from-indigo-600 via-indigo-500 to-sky-400'
-                )}
-                style={{ width: `${percent}%` }}
+          <HStack gap={2} align="center">
+            {isDownloading && onCancel && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<XCircle className="w-3.5 h-3.5 text-rose-400" />}
+                label="Cancel"
+                onClick={onCancel}
               />
-            </div>
-          </div>
-
-          {/* Metrics Row (Speed, ETA, Status Message) */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1 text-xs text-slate-400">
-            {speed && (
-              <div className="flex items-center gap-1.5 bg-slate-950/40 p-2 rounded-lg border border-slate-800/60">
-                <HardDrive className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />
-                <span className="truncate">
-                  Speed: <strong className="text-slate-200 font-mono">{speed}</strong>
-                </span>
-              </div>
             )}
-
-            {eta !== null && eta > 0 && (
-              <div className="flex items-center gap-1.5 bg-slate-950/40 p-2 rounded-lg border border-slate-800/60">
-                <Timer className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
-                <span className="truncate">
-                  ETA: <strong className="text-slate-200 font-mono">{eta}s</strong>
-                </span>
-              </div>
+            {(isComplete || status === 'error') && onReset && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<RotateCcw className="w-3.5 h-3.5" />}
+                label="Start Over"
+                onClick={onReset}
+              />
             )}
+          </HStack>
+        </HStack>
 
-            <div className="col-span-2 sm:col-span-1 flex items-center gap-1.5 bg-slate-950/40 p-2 rounded-lg border border-slate-800/60">
-              <Activity className="w-3.5 h-3.5 text-teal-400 flex-shrink-0" />
-              <span className="truncate" title={message || 'Working...'}>
-                {message || 'Processing...'}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
+        {/* Live Telemetry Progress Bar */}
+        {!isComplete && status !== 'error' && (
+          <VStack gap={2} width="100%">
+            <ProgressBar
+              label="Download Progress"
+              value={percent}
+              max={100}
+              isIndeterminate={isPostProcessing}
+              hasValueLabel={!isPostProcessing}
+              variant={isPostProcessing ? 'warning' : 'accent'}
+            />
 
-      {/* Completed State */}
-      {isComplete && (
-        <div className="space-y-4">
-          {files && files.length > 1 ? (
-            /* Multi-File Unbundled Delivery Card */
-            <div className="space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30">
-                <div className="flex items-start gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
-                    <Files className="w-5 h-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-slate-100">
-                      {files.length} Files Ready to Save
-                    </div>
-                    <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
-                      {fileSize && (
-                        <span className="font-mono text-emerald-300 font-medium">
-                          {formatBytes(fileSize)} total
-                        </span>
-                      )}
-                      <span>•</span>
-                      <span>Delivered as separate files</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Save All Files Button */}
-                <button
-                  type="button"
-                  onClick={handleDownloadAllClick}
-                  className={cn(
-                    'px-5 py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 flex-shrink-0',
-                    'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-600/30',
-                    'hover:from-emerald-500 hover:to-emerald-600 hover:shadow-emerald-600/50 active:scale-95'
-                  )}
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Save All Files ({files.length})</span>
-                </button>
-              </div>
-
-              {/* Individual Files Item List */}
-              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                {files.map((file, idx) => (
-                  <div
-                    key={file.filename || idx}
-                    className="flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 text-xs"
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <FileCheck className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                      <span className="font-medium text-slate-200 truncate" title={file.filename}>
-                        {file.filename}
-                      </span>
-                      {file.file_size && (
-                        <span className="text-slate-400 font-mono flex-shrink-0">
-                          ({formatBytes(file.file_size)})
-                        </span>
-                      )}
-                    </div>
-                    <a
-                      href={getSafeDownloadUrl(file.download_url)}
-                      download={file.filename || undefined}
-                      className="px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/50 flex items-center gap-1.5 font-medium transition-colors flex-shrink-0"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>Save</span>
-                    </a>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            /* Single File or Packaged ZIP Delivery Card */
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30">
-              <div className="flex items-start gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 flex-shrink-0">
-                  <FileCheck className="w-5 h-5" />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-slate-100 truncate" title={filename || ''}>
-                    {filename || 'Downloaded File'}
-                  </div>
-                  <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
-                    {fileSize && (
-                      <span className="font-mono text-emerald-300 font-medium">
-                        {formatBytes(fileSize)}
-                      </span>
-                    )}
-                    <span>•</span>
-                    <span>Ready to save to disk</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Direct Download Link */}
-              <a
-                href={downloadUrl ? getSafeDownloadUrl(downloadUrl) : undefined}
-                download={filename || undefined}
-                className={cn(
-                  'px-5 py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all duration-200 flex-shrink-0',
-                  'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-600/30',
-                  'hover:from-emerald-500 hover:to-emerald-600 hover:shadow-emerald-600/50 active:scale-95',
-                  !downloadUrl && 'pointer-events-none opacity-50'
+            {/* Metrics Chips */}
+            <HStack gap={3} align="center" justify="between" width="100%" wrap="wrap">
+              <HStack gap={2} align="center">
+                {speed && (
+                  <Badge
+                    variant="blue"
+                    icon={<Activity className="w-3 h-3" />}
+                    label={speed}
+                  />
                 )}
-              >
-                <Download className="w-4 h-4" />
-                <span>Save File</span>
-              </a>
-            </div>
-          )}
-        </div>
-      )}
+                {eta !== null && eta > 0 && (
+                  <Badge
+                    variant="neutral"
+                    icon={<Timer className="w-3 h-3" />}
+                    label={`${eta}s remaining`}
+                  />
+                )}
+              </HStack>
 
-      {/* Error State */}
-      {status === 'error' && (
-        <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/30 space-y-3">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <h4 className="text-sm font-semibold text-rose-200">Download Failed</h4>
-              <p className="text-xs text-rose-300 leading-relaxed font-mono">
-                {error || message || 'An unexpected error occurred during download execution.'}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+              {message && (
+                <Text type="supporting" color="secondary">
+                  {message}
+                </Text>
+              )}
+            </HStack>
+          </VStack>
+        )}
+
+        {/* Error Alert Banner */}
+        {status === 'error' && error && (
+          <Banner
+            status="error"
+            title="Download Operation Failed"
+            description={error}
+          />
+        )}
+
+        {/* Completion Stage: Direct File Retrieval */}
+        {isComplete && (
+          <VStack gap={4} width="100%">
+            {/* Single File Delivery Card */}
+            {downloadUrl && (
+              <Card padding={3} variant="muted" width="100%">
+                <HStack gap={3} align="center" justify="between" width="100%" wrap="wrap">
+                  <HStack gap={3} align="center">
+                    <FileCheck className="w-6 h-6 text-emerald-400" />
+                    <VStack gap={0}>
+                      <Text weight="semibold">
+                        {filename || 'Downloaded Media'}
+                      </Text>
+                      {fileSize !== null && fileSize > 0 && (
+                        <Text type="supporting" color="secondary">
+                          {formatBytes(fileSize)}
+                        </Text>
+                      )}
+                    </VStack>
+                  </HStack>
+
+                  <Link
+                    href={encodeUrlForAnchor(downloadUrl)}
+                    download={filename || 'download'}
+                  >
+                    Save File
+                  </Link>
+                </HStack>
+              </Card>
+            )}
+
+            {/* Unbundled Multi-File Items List */}
+            {hasMultipleFiles && (
+              <VStack gap={3} width="100%">
+                <HStack gap={2} align="center" justify="between" width="100%">
+                  <HStack gap={2} align="center">
+                    <Files className="w-4 h-4 text-indigo-400" />
+                    <Heading level={4}>
+                      Individual Media Files ({files.length})
+                    </Heading>
+                  </HStack>
+
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="sm"
+                    icon={<Download className="w-3.5 h-3.5" />}
+                    label="Save All Files"
+                    onClick={handleDownloadAllClick}
+                  />
+                </HStack>
+
+                <VStack gap={2} width="100%">
+                  {files.map((file, idx) => (
+                    <Card key={idx} padding={2} variant="muted" width="100%">
+                      <HStack gap={2} align="center" justify="between" width="100%">
+                        <HStack gap={2} align="center">
+                          <Badge variant="neutral" label={`#${idx + 1}`} />
+                          <VStack gap={0}>
+                            <Text weight="medium">
+                              {file.filename}
+                            </Text>
+                            {file.file_size != null && file.file_size > 0 && (
+                              <Text type="supporting" color="secondary">
+                                {formatBytes(file.file_size)}
+                              </Text>
+                            )}
+                          </VStack>
+                        </HStack>
+
+                        <Link
+                          href={encodeUrlForAnchor(file.download_url)}
+                          download={file.filename}
+                        >
+                          Save
+                        </Link>
+                      </HStack>
+                    </Card>
+                  ))}
+                </VStack>
+              </VStack>
+            )}
+          </VStack>
+        )}
+      </VStack>
+    </Card>
   );
 };

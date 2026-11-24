@@ -1,5 +1,23 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Dialog,
+  BottomSheet,
+  Card,
+  VStack,
+  HStack,
+  Heading,
+  Text,
+  Badge,
+  Token,
+  Button,
+  Banner,
+  SegmentedControl,
+  SegmentedControlItem,
+  TextInput,
+  TextArea,
+  useMediaQuery,
+} from '@astryxdesign/core';
+import {
   X,
   Shield,
   Cookie,
@@ -32,13 +50,13 @@ import {
   subscribeToSessionSettings,
 } from '../lib/sessionSettings';
 import type { CookiePlatform } from '../types/api';
-import { cn } from '../lib/utils';
 
 export interface CookieSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   defaultPlatform?: string;
   defaultTab?: 'cookies' | 'proxy';
+  presentation?: 'dialog' | 'bottom-sheet';
 }
 
 interface PlatformGuide {
@@ -127,7 +145,10 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
   onClose,
   defaultPlatform,
   defaultTab = 'cookies',
+  presentation,
 }) => {
+  const isMobile = useMediaQuery('(max-width: 768px)');
+  const resolvedPresentation = presentation ?? (isMobile ? 'bottom-sheet' : 'dialog');
   const [activeTab, setActiveTab] = useState<'cookies' | 'proxy'>(defaultTab);
 
   useEffect(() => {
@@ -135,6 +156,7 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
       setActiveTab(defaultTab);
     }
   }, [isOpen, defaultTab]);
+
   const [pastingPlatform, setPastingPlatform] = useState<string | null>(defaultPlatform || null);
   const [pastedContent, setPastedContent] = useState('');
   const [proxyInput, setProxyInput] = useState('');
@@ -142,7 +164,7 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
     null
   );
 
-  // Guide accordion states - open by default so step-by-step export instructions are immediately visible
+  // Guide accordion states
   const [isGuideOpen, setIsGuideOpen] = useState(true);
   const [expandedPlatformGuide, setExpandedPlatformGuide] = useState<string | null>(null);
 
@@ -173,7 +195,7 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
     }
   }, [isOpen, defaultPlatform]);
 
-  // Sync session proxy into proxy input (kept empty if using server fallback)
+  // Sync session proxy into proxy input
   useEffect(() => {
     if (sessionProxy) {
       setProxyInput(sessionProxy);
@@ -294,213 +316,186 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Hidden file input for cookie upload */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".txt"
-          onChange={handleFileChange}
-          className="hidden"
-        />
-
+  const modalContent = (
+    <Card padding={4} variant="transparent" width="100%">
+      <VStack gap={4} width="100%">
         {/* Modal Header */}
-        <div className="flex items-center justify-between p-5 border-b border-slate-800">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-              <Shield className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-slate-100">Settings & Authentication</h2>
-              <p className="text-xs text-slate-400">
-                Session-based Netscape cookies & proxy routing (stored locally in your browser)
-              </p>
-            </div>
-          </div>
+          <HStack gap={2} align="center" justify="between" width="100%">
+            <HStack gap={3} align="center">
+              <Shield className="w-5 h-5 text-indigo-400" />
+              <VStack gap={0}>
+                <Heading level={2}>
+                  Settings & Authentication
+                </Heading>
+                <Text type="supporting" color="secondary">
+                  Session-based Netscape cookies & proxy routing (stored locally in your browser)
+                </Text>
+              </VStack>
+            </HStack>
 
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close settings"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+            <Button
+              variant="ghost"
+              size="sm"
+              isIconOnly
+              icon={<X className="w-4 h-4" />}
+              label="Close settings"
+              onClick={onClose}
+            />
+          </HStack>
+
+          {/* Navigation Tabs (Platform Cookies vs Proxy) */}
+          <SegmentedControl
+            label="Settings Categories"
+            value={activeTab}
+            onChange={(val) => setActiveTab(val as 'cookies' | 'proxy')}
+            layout="fill"
           >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+            <SegmentedControlItem
+              value="cookies"
+              label="Platform Cookies"
+              icon={<Cookie className="w-4 h-4 text-indigo-400" />}
+            />
+            <SegmentedControlItem
+              value="proxy"
+              label="Proxy Configuration"
+              icon={<Server className="w-4 h-4 text-sky-400" />}
+            />
+          </SegmentedControl>
 
-        {/* Tabs Bar */}
-        <div className="flex border-b border-slate-800 bg-slate-950/50 px-5 pt-2">
-          <button
-            type="button"
-            onClick={() => setActiveTab('cookies')}
-            className={cn(
-              'flex items-center gap-2 py-2.5 px-4 text-xs font-semibold border-b-2 transition-all',
-              activeTab === 'cookies'
-                ? 'border-indigo-500 text-indigo-300'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            )}
-          >
-            <Cookie className="w-3.5 h-3.5" />
-            <span>Platform Cookies</span>
-          </button>
+          {/* Notification Banner */}
+          {actionMessage && (
+            <Banner
+              status={actionMessage.type === 'success' ? 'success' : 'error'}
+              title={actionMessage.text}
+            />
+          )}
 
-          <button
-            type="button"
-            onClick={() => setActiveTab('proxy')}
-            className={cn(
-              'flex items-center gap-2 py-2.5 px-4 text-xs font-semibold border-b-2 transition-all',
-              activeTab === 'proxy'
-                ? 'border-indigo-500 text-indigo-300'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            )}
-          >
-            <Server className="w-3.5 h-3.5" />
-            <span>Proxy Configuration</span>
-          </button>
-        </div>
-
-        {/* Global Notification Banner */}
-        {actionMessage && (
-          <div
-            className={cn(
-              'px-5 py-2.5 text-xs flex items-center gap-2 border-b transition-all',
-              actionMessage.type === 'success'
-                ? 'bg-emerald-950/30 text-emerald-300 border-emerald-500/30'
-                : 'bg-rose-950/30 text-rose-300 border-rose-500/30'
-            )}
-          >
-            {actionMessage.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-            ) : (
-              <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
-            )}
-            <span>{actionMessage.text}</span>
-          </div>
-        )}
-
-        {/* Tab Content Body */}
-        <div className="p-5 overflow-y-auto space-y-6">
+          {/* Tab 1: Platform Cookies */}
           {activeTab === 'cookies' && (
-            <div className="space-y-4">
+            <VStack gap={4} width="100%">
               {/* Session Storage Notice */}
-              <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800 text-xs text-slate-300 flex items-start gap-2.5">
-                <Info className="w-4 h-4 text-indigo-400 flex-shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <span className="font-semibold text-slate-200">
-                    Client Session Isolation:
-                  </span>
-                  <p className="text-slate-400 leading-relaxed">
-                    Cookies added here are saved safely in your browser’s <code className="text-indigo-300">localStorage</code>.
-                    They are transmitted with your inspection and download requests without modifying or overwriting server configuration.
-                    If omitted, the server falls back to server-side cookies.
-                  </p>
-                </div>
-              </div>
+              <Card padding={3} variant="muted" width="100%">
+                <HStack gap={2} align="start" width="100%">
+                  <Info className="w-4 h-4 text-indigo-400" />
+                  <VStack gap={1} width="100%">
+                    <Text weight="semibold">
+                      Client Session Isolation:
+                    </Text>
+                    <Text type="supporting" color="secondary">
+                      Cookies added here are saved safely in your browser’s localStorage. They are transmitted with your inspection and download requests without modifying or overwriting server configuration. If omitted, the server falls back to server-side cookies.
+                    </Text>
+                  </VStack>
+                </HStack>
+              </Card>
 
-              {/* In-Modal Step-by-Step Cookie Retrieval Instructions Accordion */}
-              <div className="rounded-xl border border-indigo-500/30 bg-indigo-950/20 overflow-hidden transition-all">
-                <button
-                  type="button"
-                  onClick={() => setIsGuideOpen(!isGuideOpen)}
-                  className="w-full p-3.5 flex items-center justify-between text-left hover:bg-indigo-950/30 transition-colors"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <BookOpen className="w-4 h-4 text-indigo-400" />
-                    <div>
-                      <span className="text-xs font-semibold text-indigo-200">
-                        How to Obtain Netscape-Format Cookie Files
-                      </span>
-                      <p className="text-[11px] text-slate-400">
-                        Step-by-step export instructions for Instagram, Twitter/X, and YouTube
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-indigo-300">
-                    <span>{isGuideOpen ? 'Hide Guide' : 'Show Instructions'}</span>
-                    {isGuideOpen ? (
-                      <ChevronUp className="w-4 h-4 text-indigo-400" />
-                    ) : (
-                      <ChevronDown className="w-4 h-4 text-indigo-400" />
-                    )}
-                  </div>
-                </button>
+              {/* In-Modal Step-by-Step Cookie Retrieval Guidance */}
+              <Card padding={3} variant="muted" width="100%">
+                <VStack gap={3} width="100%">
+                  <HStack gap={2} align="center" justify="between" width="100%">
+                    <HStack gap={2} align="center">
+                      <BookOpen className="w-4 h-4 text-indigo-400" />
+                      <VStack gap={0}>
+                        <Text weight="semibold">
+                          How to Obtain Netscape-Format Cookie Files
+                        </Text>
+                        <Text type="supporting" color="secondary">
+                          Step-by-step export instructions for Instagram, Twitter/X, and YouTube
+                        </Text>
+                      </VStack>
+                    </HStack>
 
-                {isGuideOpen && (
-                  <div className="p-4 pt-1 border-t border-indigo-500/20 space-y-4 text-xs text-slate-300 animate-in fade-in duration-200">
-                    {/* Recommended Extensions */}
-                    <div className="space-y-2">
-                      <span className="text-[11px] font-bold text-slate-200 uppercase tracking-wider block">
-                        Recommended Browser Extensions:
-                      </span>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {RECOMMENDED_EXTENSIONS.map((ext) => (
-                          <div
-                            key={ext.name}
-                            className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 space-y-1"
-                          >
-                            <div className="font-semibold text-slate-200 flex items-center justify-between">
-                              <span>{ext.name}</span>
-                              <span className="text-[10px] text-indigo-400 font-normal">
-                                {ext.browser}
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-slate-400 leading-relaxed">
-                              {ext.desc}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={isGuideOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      label={isGuideOpen ? 'Hide Guide' : 'Show Instructions'}
+                      onClick={() => setIsGuideOpen(!isGuideOpen)}
+                    />
+                  </HStack>
 
-                    {/* Platform-Specific Step-by-Step Instructions */}
-                    <div className="space-y-3 pt-2">
-                      <span className="text-[11px] font-bold text-slate-200 uppercase tracking-wider block">
-                        Platform Instructions:
-                      </span>
+                  {isGuideOpen && (
+                    <VStack gap={3} width="100%">
+                      {/* Recommended Extensions */}
+                      <VStack gap={2} width="100%">
+                        <Text weight="semibold">
+                          Recommended Browser Extensions
+                        </Text>
+                        <HStack gap={2} wrap="wrap" width="100%">
+                          {RECOMMENDED_EXTENSIONS.map((ext) => (
+                            <Card key={ext.name} padding={2} variant="default" width="100%">
+                              <VStack gap={1} width="100%">
+                                <HStack gap={2} align="center" justify="between">
+                                  <Text weight="semibold">
+                                    {ext.name}
+                                  </Text>
+                                  <Token size="sm" color="cyan" label={ext.browser} />
+                                </HStack>
+                                <Text type="supporting" color="secondary">
+                                  {ext.desc}
+                                </Text>
+                              </VStack>
+                            </Card>
+                          ))}
+                        </HStack>
+                      </VStack>
 
-                      {PLATFORMS.map(({ id }) => {
-                        const guide = PLATFORM_GUIDES[id];
-                        return (
-                          <div
-                            key={id}
-                            className="p-3 rounded-lg bg-slate-900/90 border border-slate-800 space-y-2"
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="font-semibold text-xs text-slate-100 flex items-center gap-1.5">
-                                <Key className="w-3.5 h-3.5 text-indigo-400" />
-                                {guide.name} ({guide.domain})
-                              </span>
-                              <span className="text-[10px] font-mono text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded">
-                                Key cookies: {guide.keyCookies.join(', ')}
-                              </span>
-                            </div>
+                      {/* Platform-Specific Step-by-Step Instructions */}
+                      <VStack gap={2} width="100%">
+                        <Text weight="semibold">
+                          Platform Instructions:
+                        </Text>
+                        {PLATFORMS.map(({ id }) => {
+                          const guide = PLATFORM_GUIDES[id];
+                          return (
+                            <Card key={id} padding={3} variant="default" width="100%">
+                              <VStack gap={2} width="100%">
+                                <HStack gap={2} align="center" justify="between">
+                                  <HStack gap={1} align="center">
+                                    <Key className="w-3.5 h-3.5 text-indigo-400" />
+                                    <Text weight="semibold">
+                                      {guide.name} ({guide.domain})
+                                    </Text>
+                                  </HStack>
+                                  <Badge
+                                    variant="purple"
+                                    label={`Key cookies: ${guide.keyCookies.join(', ')}`}
+                                  />
+                                </HStack>
 
-                            <p className="text-[11px] text-slate-400">{guide.whyNeeded}</p>
+                                <Text type="supporting" color="secondary">
+                                  {guide.whyNeeded}
+                                </Text>
 
-                            <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-300 leading-relaxed pl-1">
-                              {guide.steps.map((step, idx) => (
-                                <li key={idx} className="pl-1">
-                                  <span>{step}</span>
-                                </li>
-                              ))}
-                            </ol>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
+                                <VStack gap={1} width="100%">
+                                  {guide.steps.map((step, idx) => (
+                                    <HStack key={idx} gap={2} align="start">
+                                      <Badge variant="neutral" label={`${idx + 1}`} />
+                                      <Text type="supporting" color="secondary">
+                                        {step}
+                                      </Text>
+                                    </HStack>
+                                  ))}
+                                </VStack>
+                              </VStack>
+                            </Card>
+                          );
+                        })}
+                      </VStack>
+                    </VStack>
+                  )}
+                </VStack>
+              </Card>
 
+              {/* Platform Cookie Manager Cards */}
               {isLoadingCookies ? (
-                <div className="flex items-center justify-center p-8 text-slate-400 gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
-                  <span className="text-sm">Reading cookie status...</span>
-                </div>
+                <HStack gap={2} align="center" justify="center" width="100%">
+                  <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                  <Text type="supporting" color="secondary">
+                    Reading cookie status...
+                  </Text>
+                </HStack>
               ) : (
-                <div className="space-y-3">
+                <VStack gap={3} width="100%">
                   {PLATFORMS.map(({ id, name, desc }) => {
                     const sessionCookieContent =
                       sessionCookies[id] || (id === 'twitter' ? sessionCookies['x'] : undefined);
@@ -513,275 +508,308 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
                     const isGuideExpanded = expandedPlatformGuide === id;
 
                     return (
-                      <div
-                        key={id}
-                        className="p-4 rounded-xl border border-slate-800 bg-slate-950/60 space-y-3 transition-colors"
-                      >
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-semibold text-sm text-slate-100">{name}</span>
+                      <Card key={id} padding={3} variant="default" width="100%">
+                        <VStack gap={3} width="100%">
+                          <HStack gap={2} align="center" justify="between" width="100%" wrap="wrap">
+                            <VStack gap={0}>
+                              <HStack gap={2} align="center">
+                                <Heading level={4}>
+                                  {name}
+                                </Heading>
 
-                              {/* Status Badge */}
-                              {hasSessionCookie && sessionStatus ? (
-                                sessionStatus.valid ? (
-                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                                    <CheckCircle2 className="w-3 h-3" />
-                                    Session Active ({sessionStatus.cookie_count} cookies)
-                                  </span>
+                                {/* Session / Server Status Badge */}
+                                {hasSessionCookie && sessionStatus ? (
+                                  sessionStatus.valid ? (
+                                    <Badge
+                                      variant="success"
+                                      icon={<CheckCircle2 className="w-3 h-3" />}
+                                      label={`Session Active (${sessionStatus.cookie_count} cookies)`}
+                                    />
+                                  ) : (
+                                    <Badge
+                                      variant="warning"
+                                      icon={<AlertCircle className="w-3 h-3" />}
+                                      label="Session Expired"
+                                    />
+                                  )
+                                ) : serverStatus?.exists ? (
+                                  serverStatus.valid ? (
+                                    <Badge
+                                      variant="info"
+                                      icon={<CheckCircle2 className="w-3 h-3" />}
+                                      label={`Server Fallback (${serverStatus.cookie_count} cookies)`}
+                                    />
+                                  ) : (
+                                    <Badge
+                                      variant="neutral"
+                                      icon={<AlertCircle className="w-3 h-3" />}
+                                      label="Server Expired"
+                                    />
+                                  )
                                 ) : (
-                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1">
-                                    <AlertCircle className="w-3 h-3" />
-                                    Session Expired
-                                  </span>
-                                )
-                              ) : serverStatus?.exists ? (
-                                serverStatus.valid ? (
-                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sky-500/10 text-sky-400 border border-sky-500/30 flex items-center gap-1">
-                                    <CheckCircle2 className="w-3 h-3" />
-                                    Server Fallback ({serverStatus.cookie_count} cookies)
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1">
-                                    <AlertCircle className="w-3 h-3" />
-                                    Server Expired
-                                  </span>
-                                )
-                              ) : (
-                                <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">
-                                  Missing
-                                </span>
+                                  <Badge variant="neutral" label="Missing" />
+                                )}
+                              </HStack>
+                              <Text type="supporting" color="secondary">
+                                {desc}
+                              </Text>
+                            </VStack>
+
+                            {/* Action Buttons */}
+                            <HStack gap={1} align="center">
+                              <Button
+                                variant={isGuideExpanded ? 'secondary' : 'ghost'}
+                                size="sm"
+                                icon={<HelpCircle className="w-3.5 h-3.5" />}
+                                label="Guide"
+                                onClick={() =>
+                                  setExpandedPlatformGuide(isGuideExpanded ? null : id)
+                                }
+                              />
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                icon={<Upload className="w-3.5 h-3.5 text-indigo-400" />}
+                                label="Upload"
+                                onClick={() => handleUploadClick(id)}
+                              />
+                              <Button
+                                variant={isPasting ? 'primary' : 'secondary'}
+                                size="sm"
+                                icon={<FileText className="w-3.5 h-3.5 text-indigo-400" />}
+                                label={isPasting ? 'Cancel' : 'Paste'}
+                                onClick={() => {
+                                  setPastingPlatform(isPasting ? null : id);
+                                  setPastedContent('');
+                                }}
+                              />
+                              {hasSessionCookie && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  isIconOnly
+                                  icon={<Trash2 className="w-3.5 h-3.5 text-rose-400" />}
+                                  label={`Clear ${name} session cookies`}
+                                  onClick={() => handleDeleteCookies(id)}
+                                />
                               )}
-                            </div>
+                            </HStack>
+                          </HStack>
 
-                            <p className="text-xs text-slate-400 mt-0.5">{desc}</p>
-                          </div>
+                          {/* Expanded Step Guide */}
+                          {isGuideExpanded && (
+                            <Card padding={2} variant="muted" width="100%">
+                              <VStack gap={2} width="100%">
+                                <HStack gap={2} align="center" justify="between">
+                                  <Text weight="semibold">
+                                    How to retrieve {PLATFORM_GUIDES[id].name} cookies:
+                                  </Text>
+                                  <Text type="supporting" color="secondary">
+                                    Domain: {PLATFORM_GUIDES[id].domain}
+                                  </Text>
+                                </HStack>
+                                <VStack gap={1} width="100%">
+                                  {PLATFORM_GUIDES[id].steps.map((st, i) => (
+                                    <Text key={i} type="supporting" color="secondary">
+                                      {i + 1}. {st}
+                                    </Text>
+                                  ))}
+                                </VStack>
+                              </VStack>
+                            </Card>
+                          )}
 
-                          {/* Action Buttons for this platform */}
-                          <div className="flex items-center gap-1.5 flex-shrink-0">
-                            {/* Toggle Inline Help */}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setExpandedPlatformGuide(isGuideExpanded ? null : id)
-                              }
-                              className={cn(
-                                'px-2 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1 transition-colors',
-                                isGuideExpanded
-                                  ? 'border-indigo-500/50 bg-indigo-500/10 text-indigo-300'
-                                  : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-                              )}
-                              title="How to get cookies for this platform"
-                            >
-                              <HelpCircle className="w-3.5 h-3.5" />
-                              <span className="hidden sm:inline">Guide</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleUploadClick(id)}
-                              className="px-2.5 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 text-xs font-medium flex items-center gap-1.5 transition-colors"
-                              title="Upload .txt cookie file into session"
-                            >
-                              <Upload className="w-3.5 h-3.5 text-indigo-400" />
-                              <span>Upload</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPastingPlatform(isPasting ? null : id);
-                                setPastedContent('');
-                              }}
-                              className={cn(
-                                'px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors',
-                                isPasting
-                                  ? 'border-indigo-500 bg-indigo-500/20 text-indigo-300'
-                                  : 'border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700'
-                              )}
-                              title="Paste Netscape cookie text into session"
-                            >
-                              <FileText className="w-3.5 h-3.5 text-indigo-400" />
-                              <span>{isPasting ? 'Cancel' : 'Paste'}</span>
-                            </button>
-
-                            {hasSessionCookie && (
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteCookies(id)}
-                                className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 text-slate-400 hover:text-rose-400 hover:border-rose-500/30 transition-colors"
-                                title="Clear session cookies"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Inline Platform Retrieval Steps Drawer */}
-                        {isGuideExpanded && (
-                          <div className="p-3 rounded-lg bg-slate-900 border border-indigo-500/20 space-y-2 text-xs animate-in fade-in duration-150">
-                            <div className="flex items-center justify-between text-indigo-300 font-semibold text-[11px]">
-                              <span>How to retrieve {PLATFORM_GUIDES[id].name} cookies:</span>
-                              <span className="font-mono text-[10px] text-slate-400">
-                                Domain: {PLATFORM_GUIDES[id].domain}
-                              </span>
-                            </div>
-                            <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-300 pl-1 leading-relaxed">
-                              {PLATFORM_GUIDES[id].steps.map((st, i) => (
-                                <li key={i}>{st}</li>
-                              ))}
-                            </ol>
-                          </div>
-                        )}
-
-                        {/* Status detail line */}
-                        <div className="text-[11px] text-slate-400 font-mono bg-slate-900/60 p-2 rounded-md border border-slate-800/80 flex items-center justify-between">
-                          <span>
-                            {hasSessionCookie && sessionStatus
-                              ? sessionStatus.details
-                              : serverStatus?.exists
+                          {/* Status Detail Note */}
+                          <HStack gap={2} align="center" justify="between" width="100%">
+                            <Text type="supporting" color="secondary">
+                              {hasSessionCookie && sessionStatus
+                                ? sessionStatus.details
+                                : serverStatus?.exists
                                 ? `Fallback: ${serverStatus.details}`
                                 : 'No session or server cookies configured'}
-                          </span>
-                          <span className="text-[10px] text-slate-500 uppercase tracking-wider ml-2 flex-shrink-0">
-                            {hasSessionCookie ? 'Session (localStorage)' : 'Server Fallback'}
-                          </span>
-                        </div>
-
-                        {/* Paste text area drawer */}
-                        {isPasting && (
-                          <div className="pt-2 border-t border-slate-800/80 space-y-2 animate-in fade-in duration-200">
-                            <label className="text-xs font-medium text-slate-300 block">
-                              Paste Netscape cookie contents for {name}:
-                            </label>
-                            <textarea
-                              rows={4}
-                              value={pastedContent}
-                              onChange={(e) => setPastedContent(e.target.value)}
-                              placeholder="# Netscape HTTP Cookie File&#10;.instagram.com&#9;TRUE&#9;/&#9;TRUE&#9;1750000000&#9;sessionid&#9;..."
-                              className="w-full p-2.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono text-slate-200 placeholder-slate-500 outline-none focus:border-indigo-500"
+                            </Text>
+                            <Badge
+                              variant="neutral"
+                              label={hasSessionCookie ? 'Session (localStorage)' : 'Server Fallback'}
                             />
-                            <div className="flex justify-end gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setPastingPlatform(null)}
-                                className="px-3 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-300 hover:bg-slate-800"
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleSavePasted(id)}
-                                disabled={!pastedContent.trim()}
-                                className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-medium text-white flex items-center gap-1.5 disabled:opacity-50"
-                              >
-                                <CheckCircle2 className="w-3.5 h-3.5" />
-                                <span>Save to Session</span>
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
+                          </HStack>
+
+                          {/* Paste Drawer */}
+                          {isPasting && (
+                            <VStack gap={2} width="100%">
+                              <TextArea
+                                label={`Paste Netscape cookie contents for ${name}`}
+                                value={pastedContent}
+                                onChange={(val) => setPastedContent(val)}
+                                placeholder="# Netscape HTTP Cookie File&#10;.instagram.com&#9;TRUE&#9;/&#9;TRUE&#9;1750000000&#9;sessionid&#9;..."
+                                rows={4}
+                                width="100%"
+                              />
+                              <HStack gap={2} align="center" justify="end" width="100%">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  label="Cancel"
+                                  onClick={() => setPastingPlatform(null)}
+                                />
+                                <Button
+                                  variant="primary"
+                                  size="sm"
+                                  icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+                                  label="Save to Session"
+                                  isDisabled={!pastedContent.trim()}
+                                  onClick={() => handleSavePasted(id)}
+                                />
+                              </HStack>
+                            </VStack>
+                          )}
+                        </VStack>
+                      </Card>
                     );
                   })}
-                </div>
+                </VStack>
               )}
-            </div>
+            </VStack>
           )}
 
+          {/* Tab 2: Proxy Configuration */}
           {activeTab === 'proxy' && (
-            <div className="space-y-5">
-              <div className="p-3.5 rounded-xl bg-slate-950/40 border border-slate-800 text-xs text-slate-300 flex items-start gap-2.5">
-                <Server className="w-4 h-4 text-sky-400 flex-shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <span className="font-semibold text-slate-200">
-                    Session-Based Proxy Routing:
-                  </span>
-                  <p className="text-slate-400 leading-relaxed">
-                    Set a proxy for your client session in <code className="text-sky-300">localStorage</code>.
-                    This setting will accompany your inspection and download requests without modifying or overwriting server configuration.
-                    If cleared, requests will fall back to server configuration.
-                  </p>
-                </div>
-              </div>
+            <VStack gap={4} width="100%">
+              {/* Proxy Explanation Notice */}
+              <Card padding={3} variant="muted" width="100%">
+                <HStack gap={2} align="start" width="100%">
+                  <Server className="w-4 h-4 text-sky-400" />
+                  <VStack gap={1} width="100%">
+                    <Text weight="semibold">
+                      Session-Based Proxy Routing:
+                    </Text>
+                    <Text type="supporting" color="secondary">
+                      Set a proxy for your client session in localStorage. This setting will accompany your inspection and download requests without modifying or overwriting server configuration. If cleared, requests will fall back to server configuration.
+                    </Text>
+                  </VStack>
+                </HStack>
+              </Card>
 
               {isLoadingProxy ? (
-                <div className="flex items-center justify-center p-8 text-slate-400 gap-2">
-                  <Loader2 className="w-5 h-5 animate-spin text-sky-400" />
-                  <span className="text-sm">Loading proxy settings...</span>
-                </div>
+                <HStack gap={2} align="center" justify="center" width="100%">
+                  <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
+                  <Text type="supporting" color="secondary">
+                    Loading proxy settings...
+                  </Text>
+                </HStack>
               ) : (
-                <div className="p-4 rounded-xl border border-slate-800 bg-slate-950/60 space-y-4">
-                  {/* Current Proxy Configuration Details */}
-                  <div className="flex items-center justify-between text-xs pb-3 border-b border-slate-800">
-                    <span className="text-slate-400">Current Configuration:</span>
-                    <span className="px-2 py-0.5 rounded-full font-mono font-medium text-[11px] bg-slate-800 text-slate-300 border border-slate-700">
-                      {sessionProxy
-                        ? 'Source: Client Session (localStorage)'
-                        : serverProxyConfig?.source === 'env' || serverProxyConfig?.proxy
-                          ? 'Source: Server Default (configured)'
-                          : 'Source: Server Default (none)'}
-                    </span>
-                  </div>
+                <Card padding={4} variant="default" width="100%">
+                  <VStack gap={3} width="100%">
+                    {/* Status Badge */}
+                    <HStack gap={2} align="center" justify="between" width="100%">
+                      <Text type="supporting" color="secondary">
+                        Current Configuration:
+                      </Text>
+                      <Badge
+                        variant="info"
+                        label={
+                          sessionProxy
+                            ? 'Source: Client Session (localStorage)'
+                            : serverProxyConfig?.source === 'env' || serverProxyConfig?.proxy
+                            ? 'Source: Server Default (configured)'
+                            : 'Source: Server Default (none)'
+                        }
+                      />
+                    </HStack>
 
-                  <div className="space-y-2">
-                    <label className="text-xs font-semibold text-slate-200 block">
-                      Proxy URL
-                    </label>
-                    <input
-                      type="text"
-                      value={proxyInput}
-                      onChange={(e) => setProxyInput(e.target.value)}
+                    <TextInput
+                      label="Proxy URL"
                       placeholder="e.g. socks5://host:port or http://host:port"
-                      className="w-full py-2.5 px-3 rounded-xl bg-slate-900 border border-slate-700 text-sm font-mono text-slate-200 placeholder-slate-500 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500/20"
+                      value={proxyInput}
+                      onChange={(val) => setProxyInput(val)}
+                      width="100%"
                     />
-                    <p className="text-[11px] text-slate-400">
-                      Supported schemes: <code className="text-slate-300">socks5://</code>,{' '}
-                      <code className="text-slate-300">socks5h://</code>,{' '}
-                      <code className="text-slate-300">http://</code>,{' '}
-                      <code className="text-slate-300">https://</code>
-                    </p>
-                  </div>
 
-                  <div className="flex items-center justify-end gap-2 pt-2">
-                    {sessionProxy && (
-                      <button
-                        type="button"
-                        onClick={handleClearProxy}
-                        className="px-3.5 py-2 rounded-xl border border-slate-700 text-xs font-medium text-slate-300 hover:bg-slate-800 transition-colors"
-                      >
-                        Clear Session Proxy
-                      </button>
-                    )}
+                    <Text type="supporting" color="secondary">
+                      Supported schemes: socks5://, socks5h://, http://, https://
+                    </Text>
 
-                    <button
-                      type="button"
-                      onClick={handleSaveProxy}
-                      className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-medium text-white flex items-center gap-1.5 shadow-md shadow-sky-600/20 transition-all"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Apply to Session</span>
-                    </button>
-                  </div>
-                </div>
+                    <HStack gap={2} align="center" justify="end" width="100%">
+                      {sessionProxy && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          label="Clear Session Proxy"
+                          onClick={handleClearProxy}
+                        />
+                      )}
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        icon={<CheckCircle2 className="w-3.5 h-3.5" />}
+                        label="Apply to Session"
+                        onClick={handleSaveProxy}
+                      />
+                    </HStack>
+                  </VStack>
+                </Card>
               )}
-            </div>
+            </VStack>
           )}
-        </div>
 
-        {/* Modal Footer */}
-        <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between text-xs text-slate-400">
-          <span>Settings are saved in your browser session and sent per request</span>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 font-medium transition-colors"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
+          {/* Modal Footer */}
+          <HStack gap={2} align="center" justify="between" width="100%">
+            <Text type="supporting" color="secondary">
+              Settings are saved in your browser session and sent per request
+            </Text>
+            <Button
+              variant="secondary"
+              size="sm"
+              label="Close"
+              onClick={onClose}
+            />
+          </HStack>
+        </VStack>
+      </Card>
+  );
+
+  if (resolvedPresentation === 'bottom-sheet') {
+    return (
+      <BottomSheet
+        isOpen={isOpen}
+        onOpenChange={(open) => {
+          if (!open) onClose();
+        }}
+        label="Settings & Authentication"
+        height="tall"
+      >
+        {/* Hidden file input for cookie upload */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt"
+          onChange={handleFileChange}
+          style={{ display: 'none' }}
+        />
+        {modalContent}
+      </BottomSheet>
+    );
+  }
+
+  return (
+    <Dialog
+      isOpen={isOpen}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      width={680}
+      maxHeight="88dvh"
+      purpose="info"
+    >
+      {/* Hidden file input for cookie upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".txt"
+        onChange={handleFileChange}
+        style={{ display: 'none' }}
+      />
+      {modalContent}
+    </Dialog>
   );
 };

@@ -24,6 +24,7 @@ describe('CookieSettingsModal Component (R2 Acceptance Criteria)', () => {
     isOpen: boolean;
     defaultPlatform?: string;
     defaultTab?: 'cookies' | 'proxy';
+    presentation?: 'dialog' | 'bottom-sheet';
   }) => {
     return renderToString(
       React.createElement(
@@ -34,6 +35,7 @@ describe('CookieSettingsModal Component (R2 Acceptance Criteria)', () => {
           onClose: () => {},
           defaultPlatform: props.defaultPlatform,
           defaultTab: props.defaultTab,
+          presentation: props.presentation,
         })
       )
     );
@@ -142,5 +144,27 @@ describe('CookieSettingsModal Component (R2 Acceptance Criteria)', () => {
     expect(html).toContain('Source: Server Default (none)');
     expect(html).toContain('placeholder="e.g. socks5://host:port or http://host:port"');
     expect(html).not.toContain('socks5://127.0.0.1:9050');
+  });
+
+  it('renders adaptive presentation with BottomSheet when presentation="bottom-sheet"', () => {
+    const html = renderModal({ isOpen: true, presentation: 'bottom-sheet' });
+
+    // Verify it renders the Astryx bottom sheet structure
+    expect(html).toContain('astryx-bottom-sheet');
+    expect(html).toContain('Settings &amp; Authentication');
+    expect(html).toContain('Platform Cookies');
+    expect(html).toContain('Proxy Configuration');
+    expect(html).toContain('How to Obtain Netscape-Format Cookie Files');
+    expect(html).toContain('Instagram');
+    expect(html).toContain('Twitter / X');
+    expect(html).toContain('YouTube');
+  });
+
+  it('renders adaptive presentation with Dialog when presentation="dialog"', () => {
+    const html = renderModal({ isOpen: true, presentation: 'dialog' });
+
+    expect(html).toContain('Settings &amp; Authentication');
+    expect(html).toContain('Platform Cookies');
+    expect(html).toContain('Proxy Configuration');
   });
 });
