@@ -18,42 +18,43 @@ def cleanup_old_downloads(
     active_task_ids: set[str] | None = None,
 ) -> int:
     """Scan downloads directory and remove folders older than TTL, skipping active tasks.
+    Also evict expired in-memory tasks from progress_manager.
 
     Returns the number of deleted directories.
     """
-    if not downloads_dir.exists() or not downloads_dir.is_dir():
-        return 0
-
     active_set = active_task_ids or set()
     now = time.time()
     ttl_seconds = ttl_minutes * 60
     deleted_count = 0
 
-    for item in downloads_dir.iterdir():
-        # Only process subdirectories (task directories)
-        if not item.is_dir():
-            continue
+    if downloads_dir.exists() and downloads_dir.is_dir():
+        for item in downloads_dir.iterdir():
+            # Only process subdirectories (task directories)
+            if not item.is_dir():
+                continue
 
-        # Skip gitkeep or special hidden folders
-        if item.name.startswith("."):
-            continue
+            # Skip gitkeep or special hidden folders
+            if item.name.startswith("."):
+                continue
 
-        # Do not delete tasks that are currently active
-        if item.name in active_set:
-            continue
+            # Do not delete tasks that are currently active
+            if item.name in active_set:
+                continue
 
-        try:
-            # Check directory modification time
-            stat = item.stat()
-            age_seconds = now - stat.st_mtime
+            try:
+                # Check directory modification time
+                stat = item.stat()
+                age_seconds = now - stat.st_mtime
 
-            if age_seconds >= ttl_seconds:
-                shutil.rmtree(item, ignore_errors=True)
-                deleted_count += 1
-                progress_manager.evict_task(item.name)
-        except Exception:
-            # Ignore errors for files currently being locked or cleaned
-            continue
+                if age_seconds >= ttl_seconds:
+                    shutil.rmtree(item, ignore_errors=True)
+                    deleted_count += 1
+                    progress_manager.evict_task(item.name)
+            except Exception:
+                # Ignore errors for files currently being locked or cleaned
+                continue
+
+    progress_manager.evict_expired_tasks(ttl_minutes=ttl_minutes, active_task_ids=active_set)
 
     return deleted_count
 

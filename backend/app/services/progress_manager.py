@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+import time
 import uuid
 from typing import Any, AsyncGenerator
 from app.models.progress import TaskProgress
@@ -69,10 +70,15 @@ def _format_event(event_type: str, data: dict) -> dict:
     }
 
 
-async def create_task(task_id: str | None = None) -> TaskProgress:
+async def create_task(task_id: str | None = None, created_at: float | None = None) -> TaskProgress:
     """Create and register a new task."""
     tid = task_id or f"task-{uuid.uuid4().hex[:12]}"
-    task = TaskProgress(task_id=tid, status="queued", progress=0.0)
+    task = TaskProgress(
+        task_id=tid,
+        status="queued",
+        progress=0.0,
+        **({"created_at": created_at} if created_at is not None else {}),
+    )
     async with _lock:
         _tasks[tid] = task
         _subscribers[tid] = []
@@ -264,6 +270,33 @@ async def cleanup_task(task_id: str, message: str = "Task expired and cleaned up
     """Remove task tracking and close active subscriber queues."""
     async with _lock:
         return evict_task(task_id, message=message)
+
+
+def evict_expired_tasks(ttl_minutes: int, active_task_ids: set[str] | None = None) -> int:
+    """Evict in-memory tasks older than TTL, skipping active tasks.
+
+    Returns the number of evicted tasks.
+    """
+    now = time.time()
+    ttl_seconds = ttl_minutes * 60
+    active_set = active_task_ids or set()
+    active_statuses = {"queued", "downloading", "postprocessing"}
+
+    with _lock:
+        expired_ids = [
+            tid
+            for tid, task in _tasks.items()
+            if tid not in active_set
+            and task.status not in active_statuses
+            and (now - task.created_at) >= ttl_seconds
+        ]
+
+    evicted_count = 0
+    for tid in expired_ids:
+        if evict_task(tid):
+            evicted_count += 1
+
+    return evicted_count
 
 
 async def subscribe_sse(task_id: str) -> AsyncGenerator[dict, None]:

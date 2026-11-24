@@ -1,5 +1,6 @@
 """Pydantic models for download progress tracking."""
 
+import time
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
@@ -8,6 +9,9 @@ class TaskProgress(BaseModel):
     """Progress status of an asynchronous download job."""
 
     task_id: str = Field(..., description="Unique task identifier")
+    created_at: float = Field(
+        default_factory=time.time, description="Creation timestamp in epoch seconds"
+    )
     status: Literal["queued", "downloading", "postprocessing", "completed", "error"] = Field(
         "queued", description="Current lifecycle state of the download task"
     )

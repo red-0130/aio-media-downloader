@@ -96,3 +96,51 @@ async def test_cleanup_evicts_in_memory_task_from_progress_manager(tmp_path):
     # Verified: task-mem-recent remains in progress_manager!
     assert progress_manager.get_task("task-mem-recent") is not None
 
+
+@pytest.mark.asyncio
+async def test_cleanup_evicts_failed_task_without_directory(tmp_path):
+    downloads_dir = tmp_path / "downloads"
+    downloads_dir.mkdir()
+
+    # Create failed task older than TTL without disk directory
+    old_time = time.time() - (120 * 60)
+    task = await progress_manager.create_task("task-failed-no-dir", created_at=old_time)
+    await progress_manager.set_error("task-failed-no-dir", "Immediate 401 Unauthorized")
+
+    assert (downloads_dir / "task-failed-no-dir").exists() is False
+    assert progress_manager.get_task("task-failed-no-dir") is not None
+
+    deleted = cleanup_old_downloads(downloads_dir, ttl_minutes=60)
+    assert deleted == 0
+    assert progress_manager.get_task("task-failed-no-dir") is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_retains_recent_failed_task_without_directory(tmp_path):
+    downloads_dir = tmp_path / "downloads"
+    downloads_dir.mkdir()
+
+    # Create failed task within TTL (10 mins old) without disk directory
+    recent_time = time.time() - (10 * 60)
+    task = await progress_manager.create_task("task-recent-failed", created_at=recent_time)
+    await progress_manager.set_error("task-recent-failed", "404 Not Found")
+
+    deleted = cleanup_old_downloads(downloads_dir, ttl_minutes=60)
+    assert deleted == 0
+    assert progress_manager.get_task("task-recent-failed") is not None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_retains_active_task_without_directory(tmp_path):
+    downloads_dir = tmp_path / "downloads"
+    downloads_dir.mkdir()
+
+    # Create active task older than TTL without disk directory
+    old_time = time.time() - (120 * 60)
+    task = await progress_manager.create_task("task-active-no-dir", created_at=old_time)
+    await progress_manager.update_progress("task-active-no-dir", progress=50.0)
+
+    deleted = cleanup_old_downloads(downloads_dir, ttl_minutes=60)
+    assert deleted == 0
+    assert progress_manager.get_task("task-active-no-dir") is not None
+
