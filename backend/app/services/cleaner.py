@@ -59,21 +59,28 @@ def cleanup_old_downloads(
     return deleted_count
 
 
-async def run_periodic_cleaner(interval_seconds: int = 600) -> None:
+async def run_periodic_cleaner(
+    interval_seconds: float = 600,
+    downloads_dir: Path | None = None,
+    ttl_minutes: int | None = None,
+) -> None:
     """Run periodic background cleanup loop removing expired task directories."""
+    target_dir = downloads_dir if downloads_dir is not None else settings.DOWNLOADS_DIR
+    target_ttl = ttl_minutes if ttl_minutes is not None else settings.STORAGE_TTL_MINUTES
     try:
         while True:
-            await asyncio.sleep(interval_seconds)
             try:
                 active_ids = progress_manager.get_active_task_ids()
                 deleted = cleanup_old_downloads(
-                    downloads_dir=settings.DOWNLOADS_DIR,
-                    ttl_minutes=settings.STORAGE_TTL_MINUTES,
+                    downloads_dir=target_dir,
+                    ttl_minutes=target_ttl,
                     active_task_ids=active_ids,
                 )
                 if deleted > 0:
                     logger.info("Cleaned %d expired download directories", deleted)
             except Exception as e:
                 logger.warning("Error during periodic storage cleanup: %s", e)
+            await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
         logger.info("Periodic storage cleaner cancelled")
+        raise

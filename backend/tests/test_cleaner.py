@@ -1,9 +1,10 @@
 """Unit tests for background TTL download directory cleaner."""
 
+import asyncio
 import os
 import time
 import pytest
-from app.services.cleaner import cleanup_old_downloads
+from app.services.cleaner import cleanup_old_downloads, run_periodic_cleaner
 from app.services import progress_manager
 
 
@@ -143,4 +144,120 @@ async def test_cleanup_retains_active_task_without_directory(tmp_path):
     deleted = cleanup_old_downloads(downloads_dir, ttl_minutes=60)
     assert deleted == 0
     assert progress_manager.get_task("task-active-no-dir") is not None
+
+
+@pytest.mark.asyncio
+async def test_run_periodic_cleaner_runs_immediately_on_startup(monkeypatch):
+    """Verify run_periodic_cleaner executes cleanup immediately on startup without waiting for interval."""
+    cleanup_called = asyncio.Event()
+    received_kwargs = {}
+
+    def mock_cleanup(*args, **kwargs):
+        received_kwargs.update(kwargs)
+        cleanup_called.set()
+        return 2
+
+    monkeypatch.setattr("app.services.cleaner.cleanup_old_downloads", mock_cleanup)
+
+    # Use a large interval (10 minutes) - if it waits, cleanup_called will not be set
+    cleaner_task = asyncio.create_task(run_periodic_cleaner(interval_seconds=600))
+
+    try:
+        await asyncio.wait_for(cleanup_called.wait(), timeout=1.0)
+        assert cleanup_called.is_set()
+        assert "downloads_dir" in received_kwargs
+        assert "ttl_minutes" in received_kwargs
+        assert "active_task_ids" in received_kwargs
+    finally:
+        cleaner_task.cancel()
+        try:
+            await cleaner_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_run_periodic_cleaner_purges_real_expired_directory_on_startup(tmp_path):
+    """Verify run_periodic_cleaner actually purges expired directories on disk immediately on startup."""
+    downloads_dir = tmp_path / "downloads"
+    downloads_dir.mkdir()
+
+    old_task = downloads_dir / "task-startup-old"
+    old_task.mkdir()
+    (old_task / "sample.mp4").write_bytes(b"data")
+    old_time = time.time() - (120 * 60)
+    os.utime(old_task, (old_time, old_time))
+
+    fresh_task = downloads_dir / "task-startup-fresh"
+    fresh_task.mkdir()
+    (fresh_task / "sample2.mp4").write_bytes(b"data")
+    fresh_time = time.time() - (10 * 60)
+    os.utime(fresh_task, (fresh_time, fresh_time))
+
+    cleaner_task = asyncio.create_task(
+        run_periodic_cleaner(
+            interval_seconds=600,
+            downloads_dir=downloads_dir,
+            ttl_minutes=60,
+        )
+    )
+
+    try:
+        for _ in range(50):
+            if not old_task.exists():
+                break
+            await asyncio.sleep(0.01)
+
+        assert not old_task.exists(), "Expired directory should be deleted immediately on startup"
+        assert fresh_task.exists(), "Fresh directory should be preserved"
+    finally:
+        cleaner_task.cancel()
+        try:
+            await cleaner_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_run_periodic_cleaner_handles_exception_and_continues(monkeypatch):
+    """Verify run_periodic_cleaner catches exceptions and continues to subsequent periodic intervals."""
+    call_count = 0
+    second_call_event = asyncio.Event()
+
+    def mock_cleanup_fail(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("Simulated transient disk error")
+        second_call_event.set()
+        return 0
+
+    monkeypatch.setattr("app.services.cleaner.cleanup_old_downloads", mock_cleanup_fail)
+
+    cleaner_task = asyncio.create_task(run_periodic_cleaner(interval_seconds=0.02))
+
+    try:
+        await asyncio.wait_for(second_call_event.wait(), timeout=1.0)
+        assert call_count >= 2
+        assert not cleaner_task.done()
+    finally:
+        cleaner_task.cancel()
+        try:
+            await cleaner_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_run_periodic_cleaner_cancellation_marks_task_cancelled():
+    """Verify task is properly marked as cancelled and raises CancelledError on await."""
+    cleaner_task = asyncio.create_task(run_periodic_cleaner(interval_seconds=600))
+    await asyncio.sleep(0.01)
+    cleaner_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await cleaner_task
+
+    assert cleaner_task.cancelled() is True
+
 
