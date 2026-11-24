@@ -1,7 +1,7 @@
 """Filename formatting and sanitization service."""
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 # Characters forbidden in Windows/Linux/macOS filenames
@@ -79,7 +79,7 @@ def _parse_to_yyyymmdd(date_val: Any) -> str | None:
         ts = float(date_str)
         # Check reasonable unix timestamp range
         if 100000000 < ts < 2500000000:
-            dt = datetime.fromtimestamp(ts)
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
             return dt.strftime("%Y%m%d")
     except ValueError:
         pass

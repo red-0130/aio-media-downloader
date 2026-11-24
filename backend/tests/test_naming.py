@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from app.services.naming_service import (
+    _parse_to_yyyymmdd,
     _truncate_to_bytes,
     format_instagram_filename,
     format_standard_filename,
@@ -58,11 +59,15 @@ def test_instagram_filename_numeric_timestamp():
         title="Travel",
         ext="mp4",
     )
-    # The formatted date will be 8 digits YYYYMMDD
-    assert filename.startswith("traveler_")
-    assert filename.endswith("_img_orig_01.mp4")
-    parts = filename.split("_")
-    assert len(parts[1]) == 8  # YYYYMMDD
+    assert filename == "traveler_20240512_img_orig_01.mp4"
+
+
+def test_parse_to_yyyymmdd_unix_timestamp_utc():
+    # 1716508800 is 2024-05-24 00:00:00 UTC
+    assert _parse_to_yyyymmdd(1716508800) == "20240524"
+    assert _parse_to_yyyymmdd("1716508800") == "20240524"
+    # 1716508799 is 2024-05-23 23:59:59 UTC
+    assert _parse_to_yyyymmdd(1716508799) == "20240523"
 
 
 def test_instagram_filename_missing_date_fallback_to_id():
