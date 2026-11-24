@@ -74,6 +74,8 @@ def classify_error(stderr_text: str) -> Exception:
         except Exception:
             pass
 
+    stderr_text = re.sub(r"://([^\s/@:]*):([^\s/@]*)@", r"://\1:[REDACTED]@", stderr_text)
+
     text_lower = stderr_text.lower()
 
     # 1. Age-restricted or private media (strictly requires user account cookies)

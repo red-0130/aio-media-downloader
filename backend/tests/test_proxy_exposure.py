@@ -125,3 +125,124 @@ def test_classify_error_without_default_proxy_unchanged(monkeypatch: pytest.Monk
 
     assert isinstance(err, ytdlp_service.AuthRequiredError)
     assert "Private video" in str(err)
+
+
+def test_classify_error_redacts_runtime_and_custom_proxy_credentials(monkeypatch: pytest.MonkeyPatch):
+    """Verify classify_error redacts passwords from custom runtime/request proxy URLs."""
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", None)
+
+    custom_socks5 = "socks5://custom_user:super_secret@proxy.internal:1080"
+    custom_http = "http://http_user:top_secret_pass@192.168.1.100:8080"
+    custom_no_user = "socks5://:pass_only@10.0.0.1:9050"
+    stderr_text = (
+        f"ERROR: Unable to download webpage: Connection error with {custom_socks5}, {custom_http}, and {custom_no_user}"
+    )
+
+    err = ytdlp_service.classify_error(stderr_text)
+    err_msg = str(err)
+
+    assert "super_secret" not in err_msg
+    assert "top_secret_pass" not in err_msg
+    assert "pass_only" not in err_msg
+    assert "socks5://custom_user:[REDACTED]@proxy.internal:1080" in err_msg
+    assert "http://http_user:[REDACTED]@192.168.1.100:8080" in err_msg
+    assert "socks5://:[REDACTED]@10.0.0.1:9050" in err_msg
+
+
+def test_classify_error_redacts_both_default_and_runtime_proxies(monkeypatch: pytest.MonkeyPatch):
+    """Verify default SOCKS5_PROXY is replaced with [REDACTED_PROXY] and runtime proxy is redacted with regex."""
+    default_proxy = "socks5://def_user:def_secret@default.corp.net:1080"
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", default_proxy)
+
+    runtime_proxy = "socks5://runtime_user:runtime_secret@runtime.net:1080"
+    stderr_text = f"Failed {default_proxy} then failed {runtime_proxy}"
+
+    err = ytdlp_service.classify_error(stderr_text)
+    err_msg = str(err)
+
+    assert "def_secret" not in err_msg
+    assert "def_user" not in err_msg
+    assert "runtime_secret" not in err_msg
+    assert "[REDACTED_PROXY]" in err_msg
+    assert "socks5://runtime_user:[REDACTED]@runtime.net:1080" in err_msg
+
+
+def test_classify_error_redacts_credentials_across_exception_types(monkeypatch: pytest.MonkeyPatch):
+    """Verify credential redaction functions across AuthRequiredError, RateLimitError, and ExtractionError."""
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", None)
+
+    # 1. AuthRequiredError
+    auth_stderr = "ERROR: Sign in to confirm you're not a bot. Failed via socks5://auth_u:auth_p@gate:1080"
+    auth_err = ytdlp_service.classify_error(auth_stderr)
+    assert isinstance(auth_err, ytdlp_service.AuthRequiredError)
+    assert "auth_p" not in str(auth_err)
+    assert "socks5://auth_u:[REDACTED]@gate:1080" in str(auth_err)
+
+    # 2. RateLimitError
+    rate_stderr = "HTTP Error 429: Too Many Requests on http://rate_u:rate_p@gate:8080"
+    rate_err = ytdlp_service.classify_error(rate_stderr)
+    assert isinstance(rate_err, ytdlp_service.RateLimitError)
+    assert "rate_p" not in str(rate_err)
+    assert "http://rate_u:[REDACTED]@gate:8080" in str(rate_err)
+
+    # 3. ExtractionError
+    generic_stderr = "ERROR: Connection refused to socks5://generic_u:generic_p@gate:1080"
+    generic_err = ytdlp_service.classify_error(generic_stderr)
+    assert isinstance(generic_err, ytdlp_service.ExtractionError)
+    assert "generic_p" not in str(generic_err)
+    assert "socks5://generic_u:[REDACTED]@gate:1080" in str(generic_err)
+
+
+def test_classify_error_preserves_non_proxy_urls_and_social_mentions(monkeypatch: pytest.MonkeyPatch):
+    """Verify standard URLs with colons followed by @mentions are not falsely matched or corrupted."""
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", None)
+
+    msg_twitter = "Error accessing https://twitter.com/user: tweet from @jack"
+    err_tw = ytdlp_service.classify_error(msg_twitter)
+    assert "https://twitter.com/user: tweet from @jack" in str(err_tw)
+    assert "[REDACTED]" not in str(err_tw)
+
+    msg_ig = "HTTP redirect to login page (https://www.instagram.com/accounts/login/?next=@me)"
+    err_ig = ytdlp_service.classify_error(msg_ig)
+    assert "https://www.instagram.com/accounts/login/?next=@me" in str(err_ig)
+    assert "[REDACTED]" not in str(err_ig)
+
+
+def test_classify_error_redacts_proxy_in_complex_multitarget_error(monkeypatch: pytest.MonkeyPatch):
+    """Verify target URLs before proxy URLs in error messages are preserved while proxy credentials are scrubbed."""
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", None)
+
+    stderr_text = (
+        "Error downloading https://youtube.com/watch?v=123: HTTP Error 404 for socks5://user:pass@proxy:1080"
+    )
+    err = ytdlp_service.classify_error(stderr_text)
+    err_msg = str(err)
+
+    assert "pass" not in err_msg
+    assert "https://youtube.com/watch?v=123: HTTP Error 404 for socks5://user:[REDACTED]@proxy:1080" in err_msg
+
+
+def test_classify_error_edge_case_credential_formats(monkeypatch: pytest.MonkeyPatch):
+    """Verify IPv6 proxy hosts, percent-encoded characters, colons in passwords, and empty passwords."""
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", None)
+
+    # IPv6 proxy host
+    err_ipv6 = ytdlp_service.classify_error("Failed connection to socks5://ipv6_u:ipv6_p@[::1]:1080")
+    assert "ipv6_p" not in str(err_ipv6)
+    assert "socks5://ipv6_u:[REDACTED]@[::1]:1080" in str(err_ipv6)
+
+    # Percent-encoded @ in password (%40)
+    err_encoded = ytdlp_service.classify_error("Error with socks5://user:p%40ssword@proxy:1080")
+    assert "p%40ssword" not in str(err_encoded)
+    assert "socks5://user:[REDACTED]@proxy:1080" in str(err_encoded)
+
+    # Colons in password
+    err_colons = ytdlp_service.classify_error("Failed via socks5://user:p:a:s:s@proxy:1080")
+    assert "p:a:s:s" not in str(err_colons)
+    assert "socks5://user:[REDACTED]@proxy:1080" in str(err_colons)
+
+    # Empty password
+    err_empty_pw = ytdlp_service.classify_error("Failed via socks5://user:@proxy:1080")
+    assert "socks5://user:[REDACTED]@proxy:1080" in str(err_empty_pw)
+
+
