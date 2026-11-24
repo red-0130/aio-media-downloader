@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from urllib.parse import quote
 from unittest.mock import AsyncMock, patch
+import zipfile
 import pytest
 
 from app.models.download import DownloadRequest
@@ -674,6 +675,401 @@ async def test_router_download_cookie_precedence_all_platforms(temp_environment,
         assert resolved_path is not None
         assert resolved_path != default_path
         assert f"client_cookies_{platform}_" in str(resolved_path)
+
+
+@pytest.mark.asyncio
+async def test_download_multiple_gallery_videos_audio_extraction_bundled_zip(temp_environment):
+    """Verify multiple gallery videos are all converted to MP3 when extract_audio=True and bundled as ZIP."""
+    task_id = "test-gallery-multi-audio-zip"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    vid1 = task_dir / "clip1.mp4"
+    vid2 = task_dir / "clip2.mp4"
+    vid1.write_bytes(b"dummy video 1")
+    vid2.write_bytes(b"dummy video 2")
+
+    async def fake_extract(input_file, output_file, audio_format="mp3", bitrate="320k"):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_bytes(b"dummy extracted mp3 audio")
+        return output_file
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down, \
+         patch("app.services.ffmpeg_service.extract_audio", side_effect=fake_extract) as mock_extract:
+        mock_down.return_value = [vid1, vid2]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="mp3",
+            package_as_zip=True,
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.task_id == task_id
+        assert result.is_zip is True
+        assert result.filename.endswith(".zip")
+        assert Path(result.file_path).exists()
+        assert mock_extract.call_count == 2
+
+        # Verify original video files were deleted
+        assert not vid1.exists()
+        assert not vid2.exists()
+
+        # Verify ZIP contains MP3 files
+        with zipfile.ZipFile(result.file_path, "r") as zf:
+            zip_entries = zf.namelist()
+            assert len(zip_entries) == 2
+            assert all(entry.endswith(".mp3") for entry in zip_entries)
+
+
+@pytest.mark.asyncio
+async def test_download_multiple_gallery_videos_audio_extraction_unbundled(temp_environment):
+    """Verify multiple gallery videos are converted to MP3 when package_as_zip=False."""
+    task_id = "test-gallery-multi-audio-unbundled"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    vid1 = task_dir / "reel1.mp4"
+    vid2 = task_dir / "reel2.mp4"
+    vid1.write_bytes(b"video 1 data")
+    vid2.write_bytes(b"video 2 data")
+
+    async def fake_extract(input_file, output_file, audio_format="mp3", bitrate="320k"):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_bytes(b"audio content")
+        return output_file
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down, \
+         patch("app.services.ffmpeg_service.extract_audio", side_effect=fake_extract) as mock_extract:
+        mock_down.return_value = [vid1, vid2]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="mp3",
+            package_as_zip=False,
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.task_id == task_id
+        assert result.is_zip is False
+        assert result.files is not None
+        assert len(result.files) == 2
+        assert all(f.filename.endswith(".mp3") for f in result.files)
+        assert mock_extract.call_count == 2
+        assert not vid1.exists()
+        assert not vid2.exists()
+
+
+@pytest.mark.asyncio
+async def test_download_mixed_gallery_items_audio_extraction(temp_environment):
+    """Verify mixed carousel (image + video) only extracts audio for the video item."""
+    task_id = "test-gallery-mixed-audio"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    img = task_dir / "photo.jpg"
+    vid = task_dir / "clip.mp4"
+    img.write_bytes(b"dummy image bytes")
+    vid.write_bytes(b"dummy video bytes")
+
+    async def fake_extract(input_file, output_file, audio_format="mp3", bitrate="320k"):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_bytes(b"extracted mp3 bytes")
+        return output_file
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down, \
+         patch("app.services.ffmpeg_service.extract_audio", side_effect=fake_extract) as mock_extract:
+        mock_down.return_value = [img, vid]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="mp3",
+            package_as_zip=True,
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.task_id == task_id
+        assert result.is_zip is True
+        assert mock_extract.call_count == 1
+        # Extract audio should only have been called on the video file
+        assert mock_extract.call_args[1]["input_file"] == vid
+        assert not vid.exists()
+        # Original image was untouched and bundled into zip
+        with zipfile.ZipFile(result.file_path, "r") as zf:
+            zip_entries = zf.namelist()
+            assert len(zip_entries) == 2
+            exts = {Path(e).suffix for e in zip_entries}
+            assert exts == {".jpg", ".mp3"}
+
+
+@pytest.mark.asyncio
+async def test_download_single_video_audio_extraction_regression(temp_environment):
+    """Verify single video gallery download still extracts audio properly."""
+    task_id = "test-gallery-single-audio"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    vid = task_dir / "single_video.mp4"
+    vid.write_bytes(b"single video bytes")
+
+    async def fake_extract(input_file, output_file, audio_format="mp3", bitrate="320k"):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_bytes(b"audio bytes")
+        return output_file
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down, \
+         patch("app.services.ffmpeg_service.extract_audio", side_effect=fake_extract) as mock_extract:
+        mock_down.return_value = [vid]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="mp3",
+            package_as_zip=False,
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.task_id == task_id
+        assert result.is_zip is False
+        assert result.filename.endswith(".mp3")
+        assert mock_extract.call_count == 1
+        assert not vid.exists()
+
+
+@pytest.mark.asyncio
+async def test_download_multiple_gallery_videos_audio_extraction_m4a_format(temp_environment):
+    """Verify target format m4a is respected for multi-video extraction."""
+    task_id = "test-gallery-multi-m4a"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    vid1 = task_dir / "part1.mp4"
+    vid2 = task_dir / "part2.webm"
+    vid1.write_bytes(b"part 1")
+    vid2.write_bytes(b"part 2")
+
+    async def fake_extract(input_file, output_file, audio_format="m4a", bitrate="320k"):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_bytes(b"m4a bytes")
+        return output_file
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down, \
+         patch("app.services.ffmpeg_service.extract_audio", side_effect=fake_extract) as mock_extract:
+        mock_down.return_value = [vid1, vid2]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="m4a",
+            package_as_zip=True,
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.is_zip is True
+        assert mock_extract.call_count == 2
+        for call in mock_extract.call_args_list:
+            assert call[1]["audio_format"] == "m4a"
+        with zipfile.ZipFile(result.file_path, "r") as zf:
+            zip_entries = zf.namelist()
+            assert len(zip_entries) == 2
+            assert all(e.endswith(".m4a") for e in zip_entries)
+
+
+@pytest.mark.asyncio
+async def test_download_gallery_extended_video_extensions_audio_extraction(temp_environment):
+    """Verify extended video containers (avi, flv, wmv, ogv) are converted to audio."""
+    task_id = "test-gallery-extended-exts"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    f_avi = task_dir / "clip1.avi"
+    f_flv = task_dir / "clip2.flv"
+    f_wmv = task_dir / "clip3.wmv"
+    f_ogv = task_dir / "clip4.ogv"
+    for f in (f_avi, f_flv, f_wmv, f_ogv):
+        f.write_bytes(b"dummy video data")
+
+    async def fake_extract(input_file, output_file, audio_format="mp3", bitrate="320k"):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_bytes(b"dummy mp3 data")
+        return output_file
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down, \
+         patch("app.services.ffmpeg_service.extract_audio", side_effect=fake_extract) as mock_extract:
+        mock_down.return_value = [f_avi, f_flv, f_wmv, f_ogv]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="mp3",
+            package_as_zip=True,
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.is_zip is True
+        assert mock_extract.call_count == 4
+        for f in (f_avi, f_flv, f_wmv, f_ogv):
+            assert not f.exists()
+        with zipfile.ZipFile(result.file_path, "r") as zf:
+            assert len(zf.namelist()) == 4
+            assert all(name.endswith(".mp3") for name in zf.namelist())
+
+
+@pytest.mark.asyncio
+async def test_download_gallery_videos_audio_extraction_stem_collision(temp_environment):
+    """Verify two video files with the same stem (e.g. clip.mp4 and clip.webm) do not collide when converted."""
+    task_id = "test-gallery-stem-collision"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    vid_mp4 = task_dir / "sample.mp4"
+    vid_webm = task_dir / "sample.webm"
+    vid_mp4.write_bytes(b"mp4 content")
+    vid_webm.write_bytes(b"webm content")
+
+    async def fake_extract(input_file, output_file, audio_format="mp3", bitrate="320k"):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_bytes(f"audio for {input_file.name}".encode())
+        return output_file
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down, \
+         patch("app.services.ffmpeg_service.extract_audio", side_effect=fake_extract) as mock_extract:
+        mock_down.return_value = [vid_mp4, vid_webm]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="mp3",
+            package_as_zip=True,
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.is_zip is True
+        assert mock_extract.call_count == 2
+        with zipfile.ZipFile(result.file_path, "r") as zf:
+            names = zf.namelist()
+            assert len(names) == 2
+            assert len(set(names)) == 2  # Disambiguated and distinct
+            assert all(n.endswith(".mp3") for n in names)
+
+
+@pytest.mark.asyncio
+async def test_download_gallery_videos_audio_extraction_progress_callback(temp_environment):
+    """Verify progress_callback receives extraction progress and message during multi-video audio extraction."""
+    task_id = "test-gallery-progress-cb"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    vid1 = task_dir / "clip1.mp4"
+    vid2 = task_dir / "clip2.mp4"
+    vid1.write_bytes(b"vid1")
+    vid2.write_bytes(b"vid2")
+
+    progress_events = []
+
+    async def on_progress(progress, message=None, **kwargs):
+        progress_events.append((progress, message))
+
+    async def fake_extract(input_file, output_file, audio_format="mp3", bitrate="320k"):
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_bytes(b"audio")
+        return output_file
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down, \
+         patch("app.services.ffmpeg_service.extract_audio", side_effect=fake_extract):
+        mock_down.return_value = [vid1, vid2]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="mp3",
+            package_as_zip=True,
+        )
+
+        await router.download(task_id, req, progress_callback=on_progress)
+
+        messages = [msg for _, msg in progress_events if msg and "Extracting audio" in msg]
+        assert len(messages) == 2
+        assert "Extracting audio (1/2)..." in messages[0]
+        assert "Extracting audio (2/2)..." in messages[1]
+
+
+@pytest.mark.asyncio
+async def test_download_gallery_videos_real_ffmpeg_end_to_end(temp_environment):
+    """Deep verification: Transcode multiple real videos to MP3 using pyffmpeg without mocking extract_audio."""
+    from app.services import ffmpeg_service
+
+    ffmpeg_bin = ffmpeg_service.get_ffmpeg_bin()
+    if not Path(ffmpeg_bin).exists():
+        pytest.skip("FFmpeg binary not available in this environment")
+
+    task_id = "test-gallery-real-ffmpeg"
+    downloads_dir = temp_environment["downloads_dir"]
+    task_dir = downloads_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    vid1 = task_dir / "segment1.mp4"
+    vid2 = task_dir / "segment2.mp4"
+
+    # Generate 2 valid MP4 files with video and synthetic sine wave audio
+    for v in (vid1, vid2):
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg_bin, "-y",
+            "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=25",
+            "-f", "lavfi", "-i", "sine=frequency=1000:duration=1",
+            "-c:v", "libx264", "-c:a", "aac", str(v),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        assert proc.returncode == 0
+
+    with patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock) as mock_down:
+        mock_down.return_value = [vid1, vid2]
+
+        req = DownloadRequest(
+            url="https://www.instagram.com/p/C7XYZ89_abc/",
+            extract_audio=True,
+            audio_format="mp3",
+            package_as_zip=True,
+        )
+
+        result = await router.download(task_id, req)
+
+        assert result.is_zip is True
+        assert Path(result.file_path).exists()
+        assert not vid1.exists()
+        assert not vid2.exists()
+
+        with zipfile.ZipFile(result.file_path, "r") as zf:
+            names = zf.namelist()
+            assert len(names) == 2
+            assert all(n.endswith(".mp3") for n in names)
+            # Verify extracted MP3 file headers (ID3 or MPEG frame sync)
+            for name in names:
+                extracted_data = zf.read(name)
+                assert len(extracted_data) > 0
+                assert extracted_data[:3] == b"ID3" or extracted_data[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")
+
+
 
 
 

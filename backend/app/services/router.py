@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import os
 import re
+import shutil
 import urllib.parse
 from urllib.parse import urlparse
 from pathlib import Path
@@ -27,6 +28,20 @@ from app.services.ytdlp_service import (
     AuthRequiredError,
     ExtractionError,
     RateLimitError,
+)
+
+SUPPORTED_VIDEO_EXTENSIONS: tuple[str, ...] = (
+    "mp4",
+    "webm",
+    "mkv",
+    "mov",
+    "m4v",
+    "avi",
+    "flv",
+    "wmv",
+    "3gp",
+    "ts",
+    "ogv",
 )
 
 
@@ -479,19 +494,45 @@ async def download(
     if not downloaded_files:
         raise ExtractionError("No files were downloaded")
 
-    # If audio extraction requested on gallery-dl downloaded video file
-    if request.extract_audio and len(downloaded_files) == 1:
-        raw_file = downloaded_files[0]
-        ext = raw_file.suffix.lower().lstrip(".")
-        if ext in ("mp4", "webm", "mkv", "mov"):
-            audio_out = raw_file.with_suffix(f".{request.audio_format}")
-            await ffmpeg_service.extract_audio(
-                input_file=raw_file,
-                output_file=audio_out,
-                audio_format=request.audio_format,
-            )
-            raw_file.unlink(missing_ok=True)
-            downloaded_files = [audio_out]
+    # If audio extraction requested on gallery-dl downloaded video files
+    if request.extract_audio:
+        target_fmt = (request.audio_format or "mp3").lower().lstrip(".")
+        converted_files: list[Path] = []
+        total_videos = sum(
+            1 for f in downloaded_files if f.suffix.lower().lstrip(".") in SUPPORTED_VIDEO_EXTENSIONS
+        )
+        converted_count = 0
+        for raw_file in downloaded_files:
+            ext = raw_file.suffix.lower().lstrip(".")
+            if ext in SUPPORTED_VIDEO_EXTENSIONS:
+                converted_count += 1
+                if progress_callback:
+                    res = progress_callback(
+                        progress=min(round(90.0 + (converted_count / max(total_videos, 1)) * 9.0, 1), 99.0),
+                        message=f"Extracting audio ({converted_count}/{total_videos})...",
+                    )
+                    if asyncio.iscoroutine(res):
+                        await res
+
+                audio_out = raw_file.with_suffix(f".{target_fmt}")
+                # Ensure no collision with existing file or already converted items before conversion
+                if (audio_out.exists() or audio_out in converted_files) and audio_out != raw_file:
+                    counter = 1
+                    while audio_out.exists() or audio_out in converted_files:
+                        audio_out = raw_file.with_name(f"{raw_file.stem}_{counter}.{target_fmt}")
+                        counter += 1
+
+                await ffmpeg_service.extract_audio(
+                    input_file=raw_file,
+                    output_file=audio_out,
+                    audio_format=target_fmt,
+                )
+                if raw_file != audio_out:
+                    raw_file.unlink(missing_ok=True)
+                converted_files.append(audio_out)
+            else:
+                converted_files.append(raw_file)
+        downloaded_files = converted_files
 
     # Extract metadata if provided or probe if missing
     meta_dict: dict[str, Any] = {}
@@ -650,7 +691,7 @@ async def download(
         used_names.add(candidate_name)
         target_path = task_dir / candidate_name
         if f != target_path:
-            f.rename(target_path)
+            shutil.move(str(f), str(target_path))
         formatted_files.append(target_path)
 
     # Package as ZIP if multiple files and package_as_zip is True
