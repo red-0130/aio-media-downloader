@@ -14,6 +14,20 @@ from app.services import cookie_manager, progress_manager, proxy_manager, router
 router = APIRouter()
 _active_workers: set[asyncio.Task] = set()
 
+_download_semaphores: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
+
+
+def get_download_semaphore() -> asyncio.Semaphore:
+    """Return semaphore for current event loop to bound concurrent downloads."""
+    global _download_semaphores
+    loop = asyncio.get_running_loop()
+    sem = _download_semaphores.get(loop)
+    if sem is None:
+        _download_semaphores = {lp: s for lp, s in _download_semaphores.items() if not lp.is_closed()}
+        sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
+        _download_semaphores[loop] = sem
+    return sem
+
 CONTENT_TYPES = {
     ".mp4": "video/mp4",
     ".mp3": "audio/mpeg",
@@ -105,39 +119,40 @@ async def start_download(request: DownloadRequest):
 
     async def run_worker():
         try:
-            async def on_progress(
-                progress: float,
-                speed: str | None = None,
-                eta: int | None = None,
-                message: str | None = None,
-                **kwargs,
-            ):
-                await progress_manager.update_progress(
+            async with get_download_semaphore():
+                async def on_progress(
+                    progress: float,
+                    speed: str | None = None,
+                    eta: int | None = None,
+                    message: str | None = None,
+                    **kwargs,
+                ):
+                    await progress_manager.update_progress(
+                        task_id=task_id,
+                        progress=progress,
+                        speed=speed,
+                        eta=eta,
+                        message=message,
+                    )
+
+                result: DownloadResult = await media_router.download(
                     task_id=task_id,
-                    progress=progress,
-                    speed=speed,
-                    eta=eta,
-                    message=message,
+                    request=request,
+                    progress_callback=on_progress,
+                    proxy=effective_proxy,
+                    cookies=request.cookies,
                 )
 
-            result: DownloadResult = await media_router.download(
-                task_id=task_id,
-                request=request,
-                progress_callback=on_progress,
-                proxy=effective_proxy,
-                cookies=request.cookies,
-            )
-
-            files_payload = (
-                [f.model_dump() for f in result.files] if result.files else None
-            )
-            await progress_manager.set_completed(
-                task_id=task_id,
-                filename=result.filename,
-                download_url=result.download_url,
-                file_size=result.file_size,
-                files=files_payload,
-            )
+                files_payload = (
+                    [f.model_dump() for f in result.files] if result.files else None
+                )
+                await progress_manager.set_completed(
+                    task_id=task_id,
+                    filename=result.filename,
+                    download_url=result.download_url,
+                    file_size=result.file_size,
+                    files=files_payload,
+                )
         except asyncio.CancelledError:
             try:
                 await asyncio.shield(

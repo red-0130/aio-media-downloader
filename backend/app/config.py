@@ -81,6 +81,11 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("STORAGE_TTL_MINUTES", "60"))
     )
 
+    # Download concurrency limit
+    MAX_CONCURRENT_DOWNLOADS: int = Field(
+        default_factory=lambda: int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "4"))
+    )
+
     def ensure_directories(self) -> None:
         """Create cookies, default cookies, and downloads directories if they do not exist."""
         self.COOKIES_DIR.mkdir(parents=True, exist_ok=True)

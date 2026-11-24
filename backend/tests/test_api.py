@@ -445,6 +445,73 @@ async def test_download_triggers_background_execution_to_completion(
 
 
 @pytest.mark.asyncio
+async def test_download_concurrency_bounded(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify that concurrent downloads are bounded by semaphore and queue properly."""
+    active_count = 0
+    max_active = 0
+    queued_observed = False
+    lock = asyncio.Lock()
+    started_event = asyncio.Event()
+
+    async def mock_download(*args, **kwargs):
+        nonlocal active_count, max_active
+        async with lock:
+            active_count += 1
+            if active_count > max_active:
+                max_active = active_count
+            if active_count >= 4:
+                started_event.set()
+        await asyncio.sleep(0.08)
+        async with lock:
+            active_count -= 1
+        return DownloadResult(
+            task_id="task-mock",
+            filename="test.mp4",
+            file_path="/tmp/test.mp4",
+            file_size=1024,
+            download_url="/api/files/task-mock/test.mp4",
+            is_zip=False,
+        )
+
+    with patch("app.services.router.download", side_effect=mock_download):
+        responses = await asyncio.gather(*[
+            async_client.post("/api/download", json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})
+            for _ in range(8)
+        ])
+        assert all(r.status_code == 200 for r in responses)
+        task_ids = [r.json()["task_id"] for r in responses]
+
+        # Wait until 4 are actively downloading, then check that other tasks are in 'queued' state
+        try:
+            await asyncio.wait_for(started_event.wait(), timeout=2.0)
+            queued_count = sum(
+                1 for tid in task_ids
+                if progress_manager.get_task(tid) and progress_manager.get_task(tid).status == "queued"
+            )
+            if queued_count > 0:
+                queued_observed = True
+        except asyncio.TimeoutError:
+            pass
+
+        # Wait for all tasks to complete
+        completed = 0
+        for _ in range(150):
+            completed = sum(
+                1 for tid in task_ids
+                if progress_manager.get_task(tid) and progress_manager.get_task(tid).status == "completed"
+            )
+            if completed == len(task_ids):
+                break
+            await asyncio.sleep(0.02)
+
+        assert max_active <= settings.MAX_CONCURRENT_DOWNLOADS
+        assert completed == len(task_ids)
+        assert queued_observed is True
+
+
+@pytest.mark.asyncio
 async def test_download_background_failure_updates_task_status(
     async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
 ):
