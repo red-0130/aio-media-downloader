@@ -1,9 +1,19 @@
 """Unit tests for security, SSRF validation, and path traversal guards."""
 
-import pytest
+import asyncio
 from pathlib import Path
+import time
+import pytest
 
-from app.services.security import is_safe_url, validate_url, validate_safe_path, is_valid_task_id, validate_task_id
+from app.services.security import (
+    is_safe_url,
+    is_safe_url_async,
+    validate_url,
+    validate_url_async,
+    validate_safe_path,
+    is_valid_task_id,
+    validate_task_id,
+)
 
 
 def test_safe_urls_accepted():
@@ -173,3 +183,48 @@ def test_task_id_validation_invalid():
         assert is_valid_task_id(tid) is False
         with pytest.raises(ValueError):
             validate_task_id(tid)
+
+
+@pytest.mark.asyncio
+async def test_async_safe_and_unsafe_urls():
+    assert await is_safe_url_async("https://www.youtube.com/watch?v=dQw4w9WgXcQ") is True
+    assert await validate_url_async("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+    assert await is_safe_url_async("http://127.0.0.1:8000/secret") is False
+    with pytest.raises(ValueError):
+        await validate_url_async("http://127.0.0.1:8000/secret")
+
+    from unittest.mock import patch
+    with patch("socket.getaddrinfo") as mock_gai:
+        mock_gai.return_value = [(2, 1, 6, "", ("127.0.0.1", 80))]
+        assert await is_safe_url_async("http://rebind.malicious.com/api") is False
+        with pytest.raises(ValueError):
+            await validate_url_async("http://rebind.malicious.com/api")
+
+
+@pytest.mark.asyncio
+async def test_async_dns_resolution_does_not_block_event_loop():
+    """Verify that slow DNS lookups in is_safe_url_async do not block event loop tasks."""
+    from unittest.mock import patch
+
+    def slow_getaddrinfo(*args, **kwargs):
+        time.sleep(0.15)
+        return [(2, 1, 6, "", ("93.184.216.34", 80))]
+
+    concurrent_task_ran = False
+
+    async def background_task():
+        nonlocal concurrent_task_ran
+        await asyncio.sleep(0.02)
+        concurrent_task_ran = True
+
+    with patch("socket.getaddrinfo", side_effect=slow_getaddrinfo):
+        bg_task = asyncio.create_task(background_task())
+        url_task = asyncio.create_task(is_safe_url_async("http://slow-dns-domain.example/video.mp4"))
+
+        await bg_task
+        assert concurrent_task_ran is True, "Background task should run while DNS resolves non-blockingly"
+
+        result = await url_task
+        assert result is True
+

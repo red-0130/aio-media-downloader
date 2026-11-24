@@ -62,7 +62,7 @@ def create_test_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="URL cannot be empty")
 
         clean_url = url.strip()
-        if not security.is_safe_url(clean_url):
+        if not await security.is_safe_url_async(clean_url):
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid or disallowed URL (SSRF protection): {url}",
@@ -89,7 +89,7 @@ def create_test_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="URL cannot be empty")
 
         clean_url = url.strip()
-        if not security.is_safe_url(clean_url):
+        if not await security.is_safe_url_async(clean_url):
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid or disallowed URL (SSRF protection): {url}",

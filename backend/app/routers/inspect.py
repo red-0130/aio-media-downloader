@@ -23,7 +23,7 @@ async def inspect_media(request: InspectRequest):
         )
 
     clean_url = url.strip()
-    if not security.is_safe_url(clean_url):
+    if not await security.is_safe_url_async(clean_url):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid or disallowed URL (SSRF protection): {url}",

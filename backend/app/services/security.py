@@ -1,5 +1,6 @@
 """Security utilities for SSRF protection and path traversal prevention."""
 
+import asyncio
 import ipaddress
 import re
 import socket
@@ -102,67 +103,104 @@ def _is_disallowed_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool
     return False
 
 
-def is_safe_url(url: str) -> bool:
-    """Validate that a URL uses http/https and does not point to private or internal addresses."""
+def _extract_and_validate_hostname(url: str) -> tuple[bool, str | None]:
+    """Validate preliminary URL syntax and hostname against internal/blocked rules."""
     if not url or not isinstance(url, str):
-        return False
+        return False, None
 
     url_str = url.strip()
     try:
         parsed = urllib.parse.urlsplit(url_str)
     except Exception:
-        return False
+        return False, None
 
     if parsed.scheme.lower() not in ("http", "https"):
-        return False
+        return False, None
 
     hostname = parsed.hostname
     if not hostname:
-        return False
+        return False, None
 
     hostname_lower = hostname.lower().strip("[]")
 
     if hostname_lower in BLOCKED_HOSTS:
-        return False
+        return False, None
 
     if (
         hostname_lower.endswith(".localhost")
         or hostname_lower.endswith(".local")
         or hostname_lower.endswith(".internal")
     ):
-        return False
+        return False, None
 
     # Check alternate POSIX IPv4 representations (integer, octal, hex, shortened)
     posix_ip = _parse_posix_ipv4(hostname_lower)
     if posix_ip is not None:
         if _is_disallowed_ip(posix_ip):
-            return False
+            return False, None
 
     # Check direct standard IP literal
     try:
         raw_ip = ipaddress.ip_address(hostname_lower)
         if _is_disallowed_ip(raw_ip):
-            return False
+            return False, None
     except ValueError:
         pass
 
-    # Resolve hostname via socket.getaddrinfo to protect against DNS rebinding & wildcard DNS
+    return True, hostname_lower
+
+
+def _check_addr_info(addr_info: list) -> bool:
+    """Validate resolved getaddrinfo IP records to protect against SSRF/DNS rebinding."""
+    for item in addr_info:
+        sockaddr = item[4]
+        ip_str = sockaddr[0]
+        try:
+            resolved_ip = ipaddress.ip_address(ip_str)
+            if _is_disallowed_ip(resolved_ip):
+                return False
+        except ValueError:
+            continue
+    return True
+
+
+async def is_safe_url_async(url: str) -> bool:
+    """Validate that a URL uses http/https and does not point to private or internal addresses asynchronously."""
+    safe, hostname_lower = _extract_and_validate_hostname(url)
+    if not safe or not hostname_lower:
+        return False
+
     try:
+        loop = asyncio.get_running_loop()
+        addr_info = await loop.getaddrinfo(hostname_lower, None)
+        return _check_addr_info(addr_info)
+    except RuntimeError:
         addr_info = socket.getaddrinfo(hostname_lower, None)
-        for item in addr_info:
-            sockaddr = item[4]
-            ip_str = sockaddr[0]
-            try:
-                resolved_ip = ipaddress.ip_address(ip_str)
-                if _is_disallowed_ip(resolved_ip):
-                    return False
-            except ValueError:
-                continue
+        return _check_addr_info(addr_info)
     except (socket.gaierror, socket.herror, OSError):
         # Unresolvable domain; hostname is not an internal IP
-        pass
+        return True
 
-    return True
+
+async def validate_url_async(url: str) -> str:
+    """Validate URL asynchronously and return it if safe; raise ValueError if unsafe."""
+    if not await is_safe_url_async(url):
+        raise ValueError(f"Invalid or disallowed URL: {url}")
+    return url.strip()
+
+
+def is_safe_url(url: str) -> bool:
+    """Validate that a URL uses http/https and does not point to private or internal addresses."""
+    safe, hostname_lower = _extract_and_validate_hostname(url)
+    if not safe or not hostname_lower:
+        return False
+
+    try:
+        addr_info = socket.getaddrinfo(hostname_lower, None)
+        return _check_addr_info(addr_info)
+    except (socket.gaierror, socket.herror, OSError):
+        # Unresolvable domain; hostname is not an internal IP
+        return True
 
 
 def validate_url(url: str) -> str:

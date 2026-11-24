@@ -322,7 +322,7 @@ async def inspect(
     cookies: dict[str, str | None] | str | None = None,
 ) -> InspectResponse:
     """Inspect media URL with automatic primary and fallback engine dispatch."""
-    clean_url = security.validate_url(url)
+    clean_url = await security.validate_url_async(url)
     platform, primary, fallback = classify_url(clean_url)
 
     clean_client_proxy = proxy.strip() if (proxy and proxy.strip()) else None
@@ -387,7 +387,7 @@ async def download(
     cookies: dict[str, str | None] | str | None = None,
 ) -> DownloadResult:
     """Execute media download with naming conventions, audio conversion, and ZIP bundling."""
-    clean_url = security.validate_url(request.url)
+    clean_url = await security.validate_url_async(request.url)
     platform, primary, fallback = classify_url(clean_url)
 
     clean_client_proxy = (proxy.strip() if (proxy and proxy.strip()) else None) or (
