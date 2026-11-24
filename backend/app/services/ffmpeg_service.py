@@ -57,7 +57,21 @@ async def run_ffmpeg_command(cmd: list[str]) -> None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    try:
+        stdout, stderr = await process.communicate()
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+            try:
+                await asyncio.shield(process.wait())
+            except (asyncio.CancelledError, Exception):
+                pass
+
     if process.returncode != 0:
         err_msg = stderr.decode("utf-8", errors="replace")
         raise RuntimeError(f"FFmpeg command failed (exit code {process.returncode}): {err_msg}")

@@ -1834,4 +1834,70 @@ async def test_twitter_multi_file_download_with_hashtag_filenames(
             assert f'filename="{item["filename"]}"' in item_resp.headers.get("content-disposition", "")
 
 
+@pytest.mark.asyncio
+async def test_download_worker_cancellation_marks_task_error(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify that cancelling a background download worker marks the task as error in progress_manager."""
+    from app.routers.download import _active_workers
+
+    async def slow_download(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    with patch("app.services.router.download", new_callable=AsyncMock, side_effect=slow_download):
+        resp = await async_client.post(
+            "/api/download",
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+        )
+        assert resp.status_code == 200
+        task_id = resp.json()["task_id"]
+
+        await asyncio.sleep(0.02)
+        for worker in list(_active_workers):
+            worker.cancel()
+
+        for _ in range(50):
+            t = progress_manager.get_task(task_id)
+            if t and t.status == "error":
+                break
+            await asyncio.sleep(0.02)
+
+        task = progress_manager.get_task(task_id)
+        assert task is not None
+        assert task.status == "error"
+        assert "cancelled" in (task.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_all_workers_cancels_on_timeout(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify wait_for_all_workers cancels active tasks when the timeout elapses."""
+    from app.routers.download import wait_for_all_workers
+
+    async def slow_download(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    with patch("app.services.router.download", new_callable=AsyncMock, side_effect=slow_download):
+        resp = await async_client.post(
+            "/api/download",
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+        )
+        assert resp.status_code == 200
+        task_id = resp.json()["task_id"]
+
+        await wait_for_all_workers(timeout=0.05)
+
+        for _ in range(50):
+            t = progress_manager.get_task(task_id)
+            if t and t.status == "error":
+                break
+            await asyncio.sleep(0.02)
+
+        task = progress_manager.get_task(task_id)
+        assert task is not None
+        assert task.status == "error"
+        assert "cancelled" in (task.error or "").lower()
+
+
 

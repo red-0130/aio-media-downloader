@@ -66,13 +66,16 @@ class MockSubprocess:
         self,
         stdout_bytes: bytes = b"",
         stderr_bytes: bytes = b"",
-        returncode: int = 0,
+        returncode: int | None = 0,
         stdout_lines: list[bytes] | None = None,
         stderr_lines: list[bytes] | None = None,
     ):
         self._stdout_bytes = stdout_bytes
         self._stderr_bytes = stderr_bytes
         self.returncode = returncode
+        self.killed = False
+        self.terminated = False
+        self._exit_event: asyncio.Event | None = None
 
         s_lines = stdout_lines if stdout_lines is not None else [
             line + b"\n" for line in stdout_bytes.splitlines() if line
@@ -83,8 +86,38 @@ class MockSubprocess:
         self.stdout = MockStreamReader(s_lines)
         self.stderr = MockStreamReader(e_lines)
 
+    def _get_exit_event(self) -> asyncio.Event:
+        if self._exit_event is None:
+            self._exit_event = asyncio.Event()
+        return self._exit_event
+
     async def communicate(self) -> tuple[bytes, bytes]:
+        if self.returncode is None:
+            self.returncode = 0
+            self._get_exit_event().set()
         return self._stdout_bytes, self._stderr_bytes
 
     async def wait(self) -> int:
+        if self.returncode is None:
+            if self.killed:
+                self.returncode = -9
+                return self.returncode
+            if self.terminated:
+                self.returncode = -15
+                return self.returncode
+            await self._get_exit_event().wait()
+            if self.returncode is None:
+                self.returncode = -9 if self.killed else (-15 if self.terminated else 0)
         return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        if self.returncode is None:
+            self.returncode = -9
+        self._get_exit_event().set()
+
+    def terminate(self) -> None:
+        self.terminated = True
+        if self.returncode is None:
+            self.returncode = -15
+        self._get_exit_event().set()

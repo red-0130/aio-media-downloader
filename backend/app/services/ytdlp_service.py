@@ -184,7 +184,20 @@ async def inspect_url(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    try:
+        stdout, stderr = await process.communicate()
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+            try:
+                await asyncio.shield(process.wait())
+            except (asyncio.CancelledError, Exception):
+                pass
 
     if process.returncode != 0:
         err_msg = stderr.decode("utf-8", errors="replace")
@@ -269,50 +282,70 @@ async def download_media(
     )
 
     stderr_lines: list[str] = []
+    stderr_task: asyncio.Task | None = None
 
-    async def read_stderr():
-        if process.stderr:
+    try:
+        async def read_stderr():
+            if process.stderr:
+                while True:
+                    line = await process.stderr.readline()
+                    if not line:
+                        break
+                    stderr_lines.append(line.decode("utf-8", errors="replace"))
+
+        stderr_task = asyncio.create_task(read_stderr())
+
+        if process.stdout:
             while True:
-                line = await process.stderr.readline()
-                if not line:
+                line_bytes = await process.stdout.readline()
+                if not line_bytes:
                     break
-                stderr_lines.append(line.decode("utf-8", errors="replace"))
+                line = line_bytes.decode("utf-8", errors="replace").strip()
 
-    stderr_task = asyncio.create_task(read_stderr())
-
-    if process.stdout:
-        while True:
-            line_bytes = await process.stdout.readline()
-            if not line_bytes:
-                break
-            line = line_bytes.decode("utf-8", errors="replace").strip()
-
-            match = PROGRESS_PATTERN.search(line)
-            if match and progress_callback:
-                percent = float(match.group("percent"))
-                speed = match.group("speed")
-                eta = _parse_eta(match.group("eta"))
-                res = progress_callback(
-                    progress=percent,
-                    speed=speed,
-                    eta=eta,
-                    message=f"Downloading: {percent:.1f}%",
-                )
-                if asyncio.iscoroutine(res):
-                    await res
-            else:
-                simple_match = PROGRESS_SIMPLE_PATTERN.search(line)
-                if simple_match and progress_callback:
-                    percent = float(simple_match.group("percent"))
+                match = PROGRESS_PATTERN.search(line)
+                if match and progress_callback:
+                    percent = float(match.group("percent"))
+                    speed = match.group("speed")
+                    eta = _parse_eta(match.group("eta"))
                     res = progress_callback(
                         progress=percent,
+                        speed=speed,
+                        eta=eta,
                         message=f"Downloading: {percent:.1f}%",
                     )
                     if asyncio.iscoroutine(res):
                         await res
+                else:
+                    simple_match = PROGRESS_SIMPLE_PATTERN.search(line)
+                    if simple_match and progress_callback:
+                        percent = float(simple_match.group("percent"))
+                        res = progress_callback(
+                            progress=percent,
+                            message=f"Downloading: {percent:.1f}%",
+                        )
+                        if asyncio.iscoroutine(res):
+                            await res
 
-    await process.wait()
-    await stderr_task
+        await process.wait()
+        await stderr_task
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+            try:
+                await asyncio.shield(process.wait())
+            except (asyncio.CancelledError, Exception):
+                pass
+        if stderr_task is not None and not stderr_task.done():
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     if process.returncode != 0:
         full_err = "".join(stderr_lines)

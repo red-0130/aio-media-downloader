@@ -34,10 +34,18 @@ async def wait_for_all_workers(timeout: float = 2.0) -> None:
     tasks = list(_active_workers)
     try:
         await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
-    except Exception:
+    except (Exception, asyncio.CancelledError):
         for t in tasks:
             if not t.done():
                 t.cancel()
+        if tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=timeout,
+                )
+            except Exception:
+                pass
 
 
 @router.post("/download", response_model=DownloadResponse)
@@ -130,6 +138,14 @@ async def start_download(request: DownloadRequest):
                 file_size=result.file_size,
                 files=files_payload,
             )
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(
+                    progress_manager.set_error(task_id=task_id, error_message="Task was cancelled")
+                )
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
         except Exception as exc:
             await progress_manager.set_error(task_id=task_id, error_message=str(exc))
 

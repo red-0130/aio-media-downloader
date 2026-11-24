@@ -129,7 +129,20 @@ async def inspect_url(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    try:
+        stdout, stderr = await process.communicate()
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+            try:
+                await asyncio.shield(process.wait())
+            except (asyncio.CancelledError, Exception):
+                pass
 
     if process.returncode != 0:
         err_msg = stderr.decode("utf-8", errors="replace")
@@ -215,7 +228,20 @@ async def download_items(
                     break
                 stderr_lines.append(line.decode("utf-8", errors="replace"))
 
-    await asyncio.gather(read_stdout(), read_stderr(), process.wait())
+    try:
+        await asyncio.gather(read_stdout(), read_stderr(), process.wait())
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+            try:
+                await asyncio.shield(process.wait())
+            except (asyncio.CancelledError, Exception):
+                pass
 
     if process.returncode != 0:
         err_msg = "".join(stderr_lines)

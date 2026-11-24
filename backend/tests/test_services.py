@@ -544,3 +544,208 @@ async def test_progress_manager_completion_with_files_list():
     assert len(payload["files"]) == 2
     assert payload["files"][0]["filename"] == "photo_1.jpg"
     assert payload["files"][1]["filename"] == "photo_2.jpg"
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_run_command_kills_process_on_cancellation():
+    """Verify ffmpeg_service.run_ffmpeg_command terminates running subprocess if task is cancelled."""
+    mock_proc = MockSubprocess(returncode=None)
+
+    async def slow_communicate():
+        await asyncio.sleep(10)
+        return b"", b""
+
+    mock_proc.communicate = slow_communicate
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        task = asyncio.create_task(ffmpeg_service.run_ffmpeg_command(["ffmpeg", "-i", "in.mp4"]))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert mock_proc.killed is True
+        assert mock_proc.returncode == -9
+
+
+@pytest.mark.asyncio
+async def test_ytdlp_extract_metadata_kills_process_on_cancellation():
+    """Verify ytdlp_service.inspect_url terminates running subprocess if task is cancelled."""
+    mock_proc = MockSubprocess(returncode=None)
+
+    async def slow_communicate():
+        await asyncio.sleep(10)
+        return b"", b""
+
+    mock_proc.communicate = slow_communicate
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        task = asyncio.create_task(ytdlp_service.inspect_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert mock_proc.killed is True
+        assert mock_proc.returncode == -9
+
+
+@pytest.mark.asyncio
+async def test_ytdlp_download_media_kills_process_on_cancellation(tmp_path):
+    """Verify ytdlp_service.download_media terminates running subprocess if task is cancelled."""
+    mock_proc = MockSubprocess(returncode=None)
+
+    async def slow_readline():
+        await asyncio.sleep(10)
+        return b""
+
+    mock_proc.stdout.readline = slow_readline
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        task = asyncio.create_task(
+            ytdlp_service.download_media("https://www.youtube.com/watch?v=dQw4w9WgXcQ", tmp_path)
+        )
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert mock_proc.killed is True
+        assert mock_proc.returncode == -9
+
+
+@pytest.mark.asyncio
+async def test_gallerydl_extract_items_kills_process_on_cancellation():
+    """Verify gallerydl_service.inspect_url terminates running subprocess if task is cancelled."""
+    mock_proc = MockSubprocess(returncode=None)
+
+    async def slow_communicate():
+        await asyncio.sleep(10)
+        return b"", b""
+
+    mock_proc.communicate = slow_communicate
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        task = asyncio.create_task(gallerydl_service.inspect_url("https://www.instagram.com/p/123/"))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert mock_proc.killed is True
+        assert mock_proc.returncode == -9
+
+
+@pytest.mark.asyncio
+async def test_gallerydl_download_items_kills_process_on_cancellation(tmp_path):
+    """Verify gallerydl_service.download_items terminates running subprocess if task is cancelled."""
+    mock_proc = MockSubprocess(returncode=None)
+
+    async def slow_readline():
+        await asyncio.sleep(10)
+        return b""
+
+    mock_proc.stdout.readline = slow_readline
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        task = asyncio.create_task(
+            gallerydl_service.download_items("https://www.instagram.com/p/123/", tmp_path)
+        )
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert mock_proc.killed is True
+        assert mock_proc.returncode == -9
+
+
+@pytest.mark.asyncio
+async def test_subprocess_cleanup_swallows_process_lookup_error():
+    """Verify process termination ignores ProcessLookupError if process already died."""
+    mock_proc = MockSubprocess(returncode=None)
+
+    async def slow_communicate():
+        await asyncio.sleep(10)
+        return b"", b""
+
+    def raise_lookup():
+        mock_proc.killed = True
+        raise ProcessLookupError("No such process")
+
+    mock_proc.communicate = slow_communicate
+    mock_proc.kill = raise_lookup
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        task = asyncio.create_task(ffmpeg_service.run_ffmpeg_command(["ffmpeg", "-i", "in.mp4"]))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert mock_proc.killed is True
+
+
+@pytest.mark.asyncio
+async def test_mock_subprocess_terminate_sets_returncode_and_unblocks_wait():
+    """Verify MockSubprocess.terminate sets terminated flag and unblocks wait immediately."""
+    proc = MockSubprocess(returncode=None)
+
+    async def wait_wrapper():
+        return await proc.wait()
+
+    task = asyncio.create_task(wait_wrapper())
+    await asyncio.sleep(0.01)
+    assert not task.done()
+
+    proc.terminate()
+    res = await asyncio.wait_for(task, timeout=1.0)
+    assert res == -15
+    assert proc.terminated is True
+    assert proc.returncode == -15
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_run_command_kills_process_on_unhandled_exception():
+    """Verify ffmpeg_service.run_ffmpeg_command terminates running subprocess on generic exception."""
+    mock_proc = MockSubprocess(returncode=None)
+
+    async def failing_communicate():
+        raise RuntimeError("Unexpected pipeline crash")
+
+    mock_proc.communicate = failing_communicate
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        with pytest.raises(RuntimeError, match="Unexpected pipeline crash"):
+            await ffmpeg_service.run_ffmpeg_command(["ffmpeg", "-i", "in.mp4"])
+
+        assert mock_proc.killed is True
+        assert mock_proc.returncode == -9
+
+
+@pytest.mark.asyncio
+async def test_ytdlp_download_media_kills_process_on_unhandled_exception(tmp_path):
+    """Verify ytdlp_service.download_media terminates running subprocess on unhandled stream error."""
+    mock_proc = MockSubprocess(returncode=None)
+
+    async def failing_readline():
+        raise RuntimeError("Stream read failure")
+
+    mock_proc.stdout.readline = failing_readline
+
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
+        with pytest.raises(RuntimeError, match="Stream read failure"):
+            await ytdlp_service.download_media(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ", tmp_path
+            )
+
+        assert mock_proc.killed is True
+        assert mock_proc.returncode == -9
