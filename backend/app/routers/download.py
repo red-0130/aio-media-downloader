@@ -1,11 +1,16 @@
 """API route handler for download task execution and file retrieval."""
 
 import asyncio
+from collections.abc import AsyncIterator
 import mimetypes
-import urllib.parse
+import os
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import FileResponse
+from typing import Annotated
+import urllib.parse
+
+import anyio
+from fastapi import APIRouter, Header, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from app.config import settings
 from app.models.download import DownloadRequest, DownloadResponse, DownloadResult
@@ -171,9 +176,84 @@ async def start_download(request: DownloadRequest):
     return DownloadResponse(task_id=task_id, status="queued")
 
 
+CHUNK_SIZE = 64 * 1024
+
+
+def _parse_ascii_uint(raw: str) -> int:
+    """Parse an ASCII-only unsigned integer (RFC 9110 1*DIGIT), rejecting signs and underscores."""
+    if not raw or not raw.isascii() or not raw.isdigit():
+        raise ValueError("Invalid unsigned integer")
+    return int(raw)
+
+
+def _parse_byte_range(range_header: str, file_size: int) -> tuple[int, int] | None:
+    """Parse a single HTTP Range header; return inclusive (start, end) or None to serve full file."""
+    value = range_header.strip()
+    if not value.lower().startswith("bytes="):
+        return None
+    spec = value[6:].strip()
+    if "," in spec:
+        return None
+
+    unsatisfiable = HTTPException(
+        status_code=status.HTTP_416_RANGE_NOT_SATISFIABLE,
+        detail="Requested Range Not Satisfiable",
+        headers={"Content-Range": f"bytes */{file_size}"},
+    )
+    if file_size <= 0 or "-" not in spec:
+        raise unsatisfiable
+
+    start_str, end_str = spec.split("-", 1)
+    start_str, end_str = start_str.strip(), end_str.strip()
+
+    try:
+        if not start_str and end_str:
+            suffix = _parse_ascii_uint(end_str)
+            if suffix <= 0:
+                raise unsatisfiable
+            start = max(0, file_size - suffix)
+            end = file_size - 1
+        elif start_str:
+            start = _parse_ascii_uint(start_str)
+            end = _parse_ascii_uint(end_str) if end_str else file_size - 1
+        else:
+            raise unsatisfiable
+    except ValueError as err:
+        raise unsatisfiable from err
+
+    if start >= file_size or end < start:
+        raise unsatisfiable
+
+    return start, min(end, file_size - 1)
+
+
+async def _stream_file_range(
+    file_obj: anyio.AsyncFile[bytes], start: int, end: int, chunk_size: int = CHUNK_SIZE
+) -> AsyncIterator[bytes]:
+    """Asynchronously stream inclusive byte range [start, end] from an already-open file."""
+    try:
+        remaining = end - start + 1
+        if remaining <= 0:
+            return
+        if start > 0:
+            await file_obj.seek(start)
+        while remaining > 0:
+            chunk = await file_obj.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+    finally:
+        await file_obj.aclose()
+
+
 @router.get("/files/{task_id}/{filename:path}")
-async def get_downloaded_file(task_id: str, filename: str):
-    """Serve completed media download or packaged ZIP archive."""
+async def get_downloaded_file(
+    task_id: str,
+    filename: str,
+    range_header: Annotated[str | None, Header(alias="Range")] = None,
+):
+    """Stream completed media download or packaged ZIP archive with byte-range support."""
     if not security.is_valid_task_id(task_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -238,14 +318,37 @@ async def get_downloaded_file(task_id: str, filename: str):
     # This preserves the '#' in the filename while ensuring browsers correctly save the file.
     encoded_filename = urllib.parse.quote(safe_file.name)
     escaped_ascii = safe_file.name.replace("\\", "\\\\").replace('"', '\\"')
-    ascii_filename = escaped_ascii.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    raw_ascii = escaped_ascii.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    ascii_filename = "".join("_" if ord(c) < 0x20 or ord(c) == 0x7F else c for c in raw_ascii)
     content_disposition = (
         f'attachment; filename="{ascii_filename}"; filename*=utf-8\'\'{encoded_filename}'
     )
 
-    return FileResponse(
-        path=safe_file,
+    file_obj = await anyio.open_file(safe_file, "rb")
+    try:
+        file_size = os.fstat(file_obj.fileno()).st_size
+        byte_range = _parse_byte_range(range_header, file_size) if range_header else None
+    except BaseException:
+        await file_obj.aclose()
+        raise
+
+    headers = {
+        "content-disposition": content_disposition,
+        "accept-ranges": "bytes",
+    }
+    if byte_range is not None:
+        start, end = byte_range
+        status_code = status.HTTP_206_PARTIAL_CONTENT
+        headers["content-range"] = f"bytes {start}-{end}/{file_size}"
+        headers["content-length"] = str(end - start + 1)
+    else:
+        start, end = 0, file_size - 1
+        status_code = status.HTTP_200_OK
+        headers["content-length"] = str(file_size)
+
+    return StreamingResponse(
+        _stream_file_range(file_obj, start, end),
+        status_code=status_code,
         media_type=media_type,
-        filename=safe_file.name,
-        headers={"content-disposition": content_disposition},
+        headers=headers,
     )

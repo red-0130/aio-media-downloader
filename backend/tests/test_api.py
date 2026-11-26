@@ -873,6 +873,174 @@ async def test_serve_existing_zip_bundle(
 
 
 @pytest.mark.asyncio
+async def test_serve_streams_multichunk_file_with_range_headers(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify files larger than chunk size stream intact with Content-Length and Accept-Ranges."""
+    task_dir = temp_environment["downloads_dir"] / "task-stream-multi"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    payload = bytes(range(256)) * 600  # 153,600 bytes (> 64 KiB chunk)
+    (task_dir / "large.mp4").write_bytes(payload)
+
+    resp = await async_client.get("/api/files/task-stream-multi/large.mp4")
+    assert resp.status_code == 200
+    assert resp.headers.get("accept-ranges") == "bytes"
+    assert resp.headers.get("content-length") == str(len(payload))
+    assert "attachment" in resp.headers.get("content-disposition", "").lower()
+    assert resp.content == payload
+
+    # Multi-chunk 206 seek across > 64 KiB boundary
+    range_resp = await async_client.get(
+        "/api/files/task-stream-multi/large.mp4",
+        headers={"Range": "bytes=70000-149999"},
+    )
+    assert range_resp.status_code == 206
+    assert range_resp.headers.get("content-range") == f"bytes 70000-149999/{len(payload)}"
+    assert range_resp.headers.get("content-length") == "80000"
+    assert range_resp.content == payload[70000:150000]
+
+    # Suffix larger than file size clamps to entire representation
+    suffix_resp = await async_client.get(
+        "/api/files/task-stream-multi/large.mp4",
+        headers={"Range": "bytes=-999999"},
+    )
+    assert suffix_resp.status_code == 206
+    assert suffix_resp.headers.get("content-range") == f"bytes 0-{len(payload) - 1}/{len(payload)}"
+    assert suffix_resp.headers.get("content-length") == str(len(payload))
+    assert suffix_resp.content == payload
+
+
+@pytest.mark.asyncio
+async def test_serve_byte_range_partial_content(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify valid HTTP Range requests return 206 Partial Content with exact slices."""
+    task_dir = temp_environment["downloads_dir"] / "task-stream-range"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    payload = b"0123456789ABCDEFGHIJ"  # 20 bytes
+    (task_dir / "clip.mp4").write_bytes(payload)
+
+    r1 = await async_client.get(
+        "/api/files/task-stream-range/clip.mp4", headers={"Range": "bytes=0-9"}
+    )
+    assert r1.status_code == 206
+    assert r1.headers.get("accept-ranges") == "bytes"
+    assert r1.headers.get("content-range") == "bytes 0-9/20"
+    assert r1.headers.get("content-length") == "10"
+    assert r1.content == b"0123456789"
+
+    r2 = await async_client.get(
+        "/api/files/task-stream-range/clip.mp4", headers={"Range": "bytes=10-"}
+    )
+    assert r2.status_code == 206
+    assert r2.headers.get("content-range") == "bytes 10-19/20"
+    assert r2.headers.get("content-length") == "10"
+    assert r2.content == b"ABCDEFGHIJ"
+
+    r3 = await async_client.get(
+        "/api/files/task-stream-range/clip.mp4", headers={"Range": "bytes=-5"}
+    )
+    assert r3.status_code == 206
+    assert r3.headers.get("content-range") == "bytes 15-19/20"
+    assert r3.headers.get("content-length") == "5"
+    assert r3.content == b"FGHIJ"
+
+    r4 = await async_client.get(
+        "/api/files/task-stream-range/clip.mp4", headers={"Range": "bytes=15-9999"}
+    )
+    assert r4.status_code == 206
+    assert r4.headers.get("content-range") == "bytes 15-19/20"
+    assert r4.headers.get("content-length") == "5"
+    assert r4.content == b"FGHIJ"
+
+    # Multi-range and non-bytes units fall back to full 200 stream
+    r5 = await async_client.get(
+        "/api/files/task-stream-range/clip.mp4", headers={"Range": "bytes=0-1, 3-4"}
+    )
+    assert r5.status_code == 200
+    assert r5.content == payload
+
+    r6 = await async_client.get(
+        "/api/files/task-stream-range/clip.mp4", headers={"Range": "items=0-5"}
+    )
+    assert r6.status_code == 200
+    assert r6.content == payload
+
+
+@pytest.mark.asyncio
+async def test_serve_invalid_or_unsatisfiable_range_returns_416(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify out-of-bounds or malformed byte ranges return 416 with Content-Range."""
+    task_dir = temp_environment["downloads_dir"] / "task-stream-416"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "clip.mp4").write_bytes(b"0123456789")
+
+    for bad_range in (
+        "bytes=10-",
+        "bytes=8-3",
+        "bytes=abc",
+        "bytes=-0",
+        "bytes=-",
+        "bytes=",
+        "bytes=+0-5",
+        "bytes=0_1-5",
+        "bytes=-5-10",
+        "bytes=0--5",
+        f"bytes=0-{'9' * 5000}",
+    ):
+        resp = await async_client.get(
+            "/api/files/task-stream-416/clip.mp4", headers={"Range": bad_range}
+        )
+        assert resp.status_code == 416, f"Expected 416 for {bad_range}, got {resp.status_code}"
+        assert resp.headers.get("content-range") == "bytes */10"
+
+
+@pytest.mark.asyncio
+async def test_serve_zero_byte_file_and_range(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify empty 0-byte file serves 200 without Range and 416 with Range."""
+    task_dir = temp_environment["downloads_dir"] / "task-stream-zero"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "empty.mp4").write_bytes(b"")
+
+    ok_resp = await async_client.get("/api/files/task-stream-zero/empty.mp4")
+    assert ok_resp.status_code == 200
+    assert ok_resp.headers.get("content-length") == "0"
+    assert ok_resp.headers.get("accept-ranges") == "bytes"
+    assert ok_resp.content == b""
+
+    range_resp = await async_client.get(
+        "/api/files/task-stream-zero/empty.mp4", headers={"Range": "bytes=0-0"}
+    )
+    assert range_resp.status_code == 416
+    assert range_resp.headers.get("content-range") == "bytes */0"
+
+
+@pytest.mark.asyncio
+async def test_get_downloaded_file_direct_call_defaults(temp_environment: dict[str, Path]):
+    """Verify direct Python call to get_downloaded_file works with default range_header=None."""
+    from app.routers.download import get_downloaded_file
+
+    task_dir = temp_environment["downloads_dir"] / "task-direct-call"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "sample.mp4").write_bytes(b"abcdefghij")
+
+    full_resp = await get_downloaded_file(task_id="task-direct-call", filename="sample.mp4")
+    assert full_resp.status_code == 200
+    full_chunks = [chunk async for chunk in full_resp.body_iterator]
+    assert b"".join(full_chunks) == b"abcdefghij"
+
+    partial_resp = await get_downloaded_file(
+        task_id="task-direct-call", filename="sample.mp4", range_header="bytes=0-4"
+    )
+    assert partial_resp.status_code == 206
+    partial_chunks = [chunk async for chunk in partial_resp.body_iterator]
+    assert b"".join(partial_chunks) == b"abcde"
+
+
+@pytest.mark.asyncio
 async def test_serve_various_content_types(
     async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
 ):
