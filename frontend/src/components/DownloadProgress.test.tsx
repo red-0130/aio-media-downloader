@@ -120,7 +120,7 @@ describe('DownloadProgress Component (Anchor Link Replacement)', () => {
     expect(html).toMatch(/<a[^>]*href="\/api\/files\/task-200\/%23slide_02\.png"[^>]*>[\s\S]*?Save[\s\S]*?<\/a>/);
 
     // Neither individual save element should be a button
-    expect(html).not.toMatch(/<button[^>]*>[\s\S]*?Save<\/button>/);
+    expect(html).not.toMatch(/<button[^>]*>[\s\S]*?>Save<[\s\S]*?<\/button>/);
   });
 
   it('keeps the batch action button "Save All Files" as a <button> element', () => {
@@ -292,5 +292,69 @@ describe('DownloadProgress Component (Anchor Link Replacement)', () => {
 
     expect(html).toContain('>Downloaded Media<');
     expect(html).toContain('download="Downloaded Media"');
+  });
+
+  it('renders single-file "Save File" as a button-styled anchor with icon, full-width on mobile and inline on desktop', () => {
+    const baseProps = {
+      status: 'completed' as const,
+      progress: 100,
+      speed: null,
+      eta: null,
+      message: 'Download ready',
+      downloadUrl: '/api/files/task-500/clip.mp4',
+      filename: 'clip.mp4',
+      fileSize: 2048,
+      error: null,
+      isDownloading: false,
+      isComplete: true,
+    };
+
+    const desktopHtml = renderToString(
+      React.createElement(DownloadProgress, { ...baseProps, isMobile: false })
+    );
+    expect(desktopHtml).toMatch(/<a[^>]*data-variant="primary"[^>]*aria-label="Save File: clip\.mp4"[^>]*download="clip\.mp4"[^>]*href="\/api\/files\/task-500\/clip\.mp4"[^>]*>[\s\S]*?<svg[\s\S]*?Save File[\s\S]*?<\/a>/);
+    expect(desktopHtml).not.toMatch(/<a[^>]*--x-width:100%[^>]*>[\s\S]*?Save File/);
+
+    const mobileHtml = renderToString(
+      React.createElement(DownloadProgress, { ...baseProps, isMobile: true })
+    );
+    expect(mobileHtml).toMatch(/<a[^>]*style="--x-width:100%"[^>]*>[\s\S]*?Save File[\s\S]*?<\/a>/);
+    expect(mobileHtml).toMatch(/<a[^>]*data-variant="primary"[^>]*aria-label="Save File: clip\.mp4"[^>]*download="clip\.mp4"[^>]*href="\/api\/files\/task-500\/clip\.mp4"[^>]*>[\s\S]*?<svg[\s\S]*?Save File[\s\S]*?<\/a>/);
+  });
+
+  it('renders multi-file "Save" anchors with Download icons and distinct secondary styling from primary "Save All Files"', () => {
+    const files: DownloadFileItem[] = [
+      {
+        download_url: '/api/files/task-501/one.jpg',
+        filename: 'one.jpg',
+        file_size: 1000,
+      },
+      {
+        download_url: '/api/files/task-501/two.jpg',
+        filename: 'two.jpg',
+        file_size: 2000,
+      },
+    ];
+
+    const html = renderToString(
+      React.createElement(DownloadProgress, {
+        status: 'completed',
+        progress: 100,
+        speed: null,
+        eta: null,
+        message: 'Ready',
+        downloadUrl: null,
+        filename: null,
+        fileSize: 3000,
+        files,
+        error: null,
+        isDownloading: false,
+        isComplete: true,
+        isMobile: false,
+      })
+    );
+
+    expect(html).toMatch(/<a[^>]*data-variant="secondary"[^>]*aria-label="Save: one\.jpg"[^>]*download="one\.jpg"[^>]*href="\/api\/files\/task-501\/one\.jpg"[^>]*>[\s\S]*?<svg[\s\S]*?Save[\s\S]*?<\/a>/);
+    expect(html).toMatch(/<button[^>]*type="button"[^>]*data-variant="primary"[^>]*>[\s\S]*?<svg[\s\S]*?Save All Files[\s\S]*?<\/button>/);
   });
 });

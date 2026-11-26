@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Card,
   VStack,
@@ -10,11 +10,12 @@ import {
   Button,
   ProgressBar,
   Banner,
-  Link,
   Tooltip,
+  useMediaQuery,
 } from '@astryxdesign/core';
 import {
   Download,
+  Check,
   CheckCircle2,
   AlertTriangle,
   RotateCcw,
@@ -26,7 +27,7 @@ import {
 } from 'lucide-react';
 import type { DownloadFileItem, TaskStatus } from '../types/api';
 import { formatBytes } from '../lib/utils';
-import { triggerBrowserDownload } from '../lib/api';
+import { getSafeDownloadUrl, triggerBrowserDownload } from '../lib/api';
 
 export interface DownloadProgressProps {
   status: TaskStatus | 'idle';
@@ -41,13 +42,10 @@ export interface DownloadProgressProps {
   error: string | null;
   isDownloading: boolean;
   isComplete: boolean;
+  isMobile?: boolean;
   onReset?: () => void;
   onCancel?: () => void;
 }
-
-const encodeUrlForAnchor = (url: string): string => {
-  return url.includes('#') ? url.replace(/#/g, '%23') : url;
-};
 
 const splitFilename = (name: string): { stem: string; ext: string | null } => {
   const lastDot = name.lastIndexOf('.');
@@ -91,7 +89,12 @@ interface FileDownloadRowProps {
   filename: string;
   fileSize?: number | null;
   downloadUrl: string;
-  linkLabel: string;
+  actionLabel: string;
+  variant: 'primary' | 'secondary';
+  size: 'sm' | 'md';
+  isSaved: boolean;
+  onSave: () => void;
+  fullWidthAction?: boolean;
   padding: 2 | 3;
   gap: 2 | 3;
   weight: 'semibold' | 'medium';
@@ -102,37 +105,63 @@ const FileDownloadRow: React.FC<FileDownloadRowProps> = ({
   filename,
   fileSize,
   downloadUrl,
-  linkLabel,
+  actionLabel,
+  variant,
+  size,
+  isSaved,
+  onSave,
+  fullWidthAction = false,
   padding,
   gap,
   weight,
-}) => (
-  <Card padding={padding} variant="muted" width="100%">
-    <HStack gap={gap} align="center" justify="between" width="100%">
+}) => {
+  const iconClass = size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4';
+  const infoRow = (
+    <HStack gap={gap} align="center" width="100%">
+      <StackItem size="static">{icon}</StackItem>
       <StackItem size="fill">
-        <HStack gap={gap} align="center" width="100%">
-          <StackItem size="static">{icon}</StackItem>
-          <StackItem size="fill">
-            <VStack gap={0} width="100%">
-              <FilenameLabel name={filename} weight={weight} />
-              {fileSize != null && fileSize > 0 && (
-                <Text type="supporting" color="secondary">
-                  {formatBytes(fileSize)}
-                </Text>
-              )}
-            </VStack>
-          </StackItem>
-        </HStack>
-      </StackItem>
-
-      <StackItem size="static">
-        <Link href={encodeUrlForAnchor(downloadUrl)} download={filename}>
-          {linkLabel}
-        </Link>
+        <VStack gap={0} width="100%">
+          <FilenameLabel name={filename} weight={weight} />
+          {fileSize != null && fileSize > 0 && (
+            <Text type="supporting" color="secondary">
+              {formatBytes(fileSize)}
+            </Text>
+          )}
+        </VStack>
       </StackItem>
     </HStack>
-  </Card>
-);
+  );
+
+  const actionButton = (
+    <Button
+      variant={variant}
+      size={size}
+      width={fullWidthAction ? '100%' : undefined}
+      href={getSafeDownloadUrl(downloadUrl)}
+      icon={isSaved ? <Check className={iconClass} /> : <Download className={iconClass} />}
+      label={isSaved ? 'Saved' : actionLabel}
+      aria-label={`${isSaved ? 'Saved' : actionLabel}: ${filename}`}
+      onClick={onSave}
+      {...({ download: filename } as Record<string, string>)}
+    />
+  );
+
+  return (
+    <Card padding={padding} variant="muted" width="100%">
+      {fullWidthAction ? (
+        <VStack gap={3} width="100%">
+          {infoRow}
+          {actionButton}
+        </VStack>
+      ) : (
+        <HStack gap={gap} align="center" justify="between" width="100%">
+          <StackItem size="fill">{infoRow}</StackItem>
+          <StackItem size="static">{actionButton}</StackItem>
+        </HStack>
+      )}
+    </Card>
+  );
+};
 
 export const DownloadProgress: React.FC<DownloadProgressProps> = ({
   status,
@@ -147,23 +176,47 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
   error,
   isDownloading,
   isComplete,
+  isMobile: isMobileProp,
   onReset,
   onCancel,
 }) => {
+  const mediaQueryIsMobile = useMediaQuery('(max-width: 768px)');
+  const isMobile = isMobileProp ?? mediaQueryIsMobile;
+  const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
+  const batchTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const percent = Math.min(100, Math.max(0, Math.round(progress * 10) / 10));
+
+  const clearBatchTimers = () => {
+    batchTimersRef.current.forEach(clearTimeout);
+    batchTimersRef.current = [];
+  };
+
+  useEffect(() => {
+    setSavedKeys({});
+    clearBatchTimers();
+    return clearBatchTimers;
+  }, [downloadUrl, files]);
+
+  const markSaved = (key: string) => {
+    setSavedKeys((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+  };
 
   const handleDownloadAllClick = () => {
     if (!files || files.length === 0) return;
-    files.forEach((f, idx) => {
+    clearBatchTimers();
+    batchTimersRef.current = files.map((f, idx) =>
       setTimeout(() => {
-        const safeUrl = encodeUrlForAnchor(f.download_url);
-        triggerBrowserDownload(safeUrl, f.filename);
-      }, idx * 200);
-    });
+        triggerBrowserDownload(f.download_url, f.filename);
+        markSaved(`${idx}:${f.download_url}`);
+      }, idx * 200)
+    );
   };
 
   const isPostProcessing = status === 'postprocessing';
-  const hasMultipleFiles = files && files.length > 1;
+  const hasMultipleFiles = Boolean(files && files.length > 1);
+  const allFilesSaved = Boolean(
+    hasMultipleFiles && files && files.every((f, idx) => savedKeys[`${idx}:${f.download_url}`])
+  );
 
   return (
     <Card padding={4} elevation="high" width="100%">
@@ -271,7 +324,12 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
                 filename={filename || 'Downloaded Media'}
                 fileSize={fileSize}
                 downloadUrl={downloadUrl}
-                linkLabel="Save File"
+                actionLabel="Save File"
+                variant="primary"
+                size="md"
+                isSaved={Boolean(savedKeys[downloadUrl])}
+                onSave={() => markSaved(downloadUrl)}
+                fullWidthAction={isMobile}
                 padding={3}
                 gap={3}
                 weight="semibold"
@@ -279,9 +337,9 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
             )}
 
             {/* Unbundled Multi-File Items List */}
-            {hasMultipleFiles && (
+            {hasMultipleFiles && files && (
               <VStack gap={3} width="100%">
-                <HStack gap={2} align="center" justify="between" width="100%">
+                <HStack gap={2} align="center" justify="between" width="100%" wrap="wrap">
                   <HStack gap={2} align="center">
                     <Files className="w-4 h-4 text-indigo-400" />
                     <Heading level={4}>
@@ -293,26 +351,33 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
                     type="button"
                     variant="primary"
                     size="sm"
-                    icon={<Download className="w-3.5 h-3.5" />}
-                    label="Save All Files"
+                    icon={allFilesSaved ? <Check className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
+                    label={allFilesSaved ? 'Saved All' : 'Save All Files'}
                     onClick={handleDownloadAllClick}
                   />
                 </HStack>
 
                 <VStack gap={2} width="100%">
-                  {files.map((file, idx) => (
-                    <FileDownloadRow
-                      key={idx}
-                      icon={<Badge variant="neutral" label={`#${idx + 1}`} />}
-                      filename={file.filename || 'Downloaded Media'}
-                      fileSize={file.file_size}
-                      downloadUrl={file.download_url}
-                      linkLabel="Save"
-                      padding={2}
-                      gap={2}
-                      weight="medium"
-                    />
-                  ))}
+                  {files.map((file, idx) => {
+                    const fileKey = `${idx}:${file.download_url}`;
+                    return (
+                      <FileDownloadRow
+                        key={idx}
+                        icon={<Badge variant="neutral" label={`#${idx + 1}`} />}
+                        filename={file.filename || 'Downloaded Media'}
+                        fileSize={file.file_size}
+                        downloadUrl={file.download_url}
+                        actionLabel="Save"
+                        variant="secondary"
+                        size="sm"
+                        isSaved={Boolean(savedKeys[fileKey])}
+                        onSave={() => markSaved(fileKey)}
+                        padding={2}
+                        gap={2}
+                        weight="medium"
+                      />
+                    );
+                  })}
                 </VStack>
               </VStack>
             )}
