@@ -357,4 +357,30 @@ describe('DownloadProgress Component (Anchor Link Replacement)', () => {
     expect(html).toMatch(/<a[^>]*data-variant="secondary"[^>]*aria-label="Save: one\.jpg"[^>]*download="one\.jpg"[^>]*href="\/api\/files\/task-501\/one\.jpg"[^>]*>[\s\S]*?<svg[\s\S]*?Save[\s\S]*?<\/a>/);
     expect(html).toMatch(/<button[^>]*type="button"[^>]*data-variant="primary"[^>]*>[\s\S]*?<svg[\s\S]*?Save All Files[\s\S]*?<\/button>/);
   });
+
+  it('renders a cancelled state with Start Over recovery button when status is idle', () => {
+    const html = renderToString(
+      React.createElement(DownloadProgress, {
+        status: 'idle',
+        progress: 25,
+        speed: null,
+        eta: null,
+        message: 'Download cancelled',
+        downloadUrl: null,
+        filename: null,
+        fileSize: null,
+        error: null,
+        isDownloading: false,
+        isComplete: false,
+        onReset: () => {},
+      })
+    );
+
+    expect(html).toContain('Download Cancelled');
+    expect(html).toContain('Download cancelled');
+    expect(html).toContain('Start Over');
+    expect(html).not.toContain('Downloading Media...');
+    expect(html).not.toContain('Save File');
+    expect(html).not.toContain('>Cancel<');
+  });
 });

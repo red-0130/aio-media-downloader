@@ -3,19 +3,15 @@
  * and TanStack Query queries & mutations.
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { getSessionCookies, getSessionProxy } from './sessionSettings';
 import type {
   CookieStatus,
-  CookieUpdateRequest,
-  DeleteCookiesResponse,
   DownloadRequest,
   DownloadResponse,
   InspectRequest,
   InspectResponse,
   ProxyConfig,
-  ProxyUpdateRequest,
-  SaveCookiesResponse,
   ValidationErrorItem,
 } from '../types/api';
 
@@ -194,56 +190,6 @@ async function fetchJson<T>(endpoint: string, options: RequestInit = {}): Promis
   return response.json() as Promise<T>;
 }
 
-/**
- * Multipart FormData fetch helper for cookie file uploads.
- */
-async function fetchMultipart<T>(endpoint: string, formData: FormData): Promise<T> {
-  const url = `${BASE_URL}${endpoint}`;
-
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      body: formData,
-    });
-  } catch (err) {
-    throw new ApiError(0, 'Failed to connect to backend server during file upload.', String(err));
-  }
-
-  if (!response.ok) {
-    let errorDetail: any = response.statusText;
-    try {
-      const errJson = await response.json();
-      if (errJson && errJson.detail !== undefined) {
-        errorDetail = errJson.detail;
-      } else if (errJson && (errJson.message || errJson.error)) {
-        errorDetail = errJson.message || errJson.error;
-      }
-    } catch {
-      // Non-JSON response
-    }
-
-    let displayMessage = `Upload failed (${response.status})`;
-    if (typeof errorDetail === 'string' && errorDetail.trim().length > 0) {
-      displayMessage = errorDetail;
-    } else if (Array.isArray(errorDetail)) {
-      const formatted = errorDetail.map(formatDetailItem).filter(Boolean).join(', ');
-      if (formatted) {
-        displayMessage = formatted;
-      }
-    } else if (errorDetail && typeof errorDetail === 'object') {
-      const formatted = formatDetailItem(errorDetail);
-      if (formatted) {
-        displayMessage = formatted;
-      }
-    }
-
-    throw new ApiError(response.status, displayMessage, errorDetail);
-  }
-
-  return response.json() as Promise<T>;
-}
-
 // ============================================================================
 // Raw API Client Functions
 // ============================================================================
@@ -314,53 +260,11 @@ export async function getCookieStatuses(): Promise<Record<string, CookieStatus>>
 }
 
 /**
- * Save pasted Netscape cookies for a platform.
- */
-export async function savePastedCookies(req: CookieUpdateRequest): Promise<SaveCookiesResponse> {
-  return fetchJson<SaveCookiesResponse>('/api/settings/cookies', {
-    method: 'POST',
-    body: JSON.stringify(req),
-  });
-}
-
-/**
- * Upload a Netscape cookie file for a platform.
- */
-export async function uploadCookieFile(platform: string, file: File): Promise<SaveCookiesResponse> {
-  if (file.size > 5 * 1024 * 1024) {
-    throw new ApiError(413, 'Cookie file exceeds maximum allowed size of 5MB');
-  }
-  const formData = new FormData();
-  formData.append('platform', platform);
-  formData.append('file', file);
-  return fetchMultipart<SaveCookiesResponse>('/api/settings/cookies/upload', formData);
-}
-
-/**
- * Delete stored cookies for a platform.
- */
-export async function deleteCookies(platform: string): Promise<DeleteCookiesResponse> {
-  return fetchJson<DeleteCookiesResponse>(`/api/settings/cookies/${encodeURIComponent(platform)}`, {
-    method: 'DELETE',
-  });
-}
-
-/**
  * Retrieve current effective SOCKS5 / HTTP proxy settings.
  */
 export async function getProxyConfig(): Promise<ProxyConfig> {
   return fetchJson<ProxyConfig>('/api/settings/proxy', {
     method: 'GET',
-  });
-}
-
-/**
- * Update runtime SOCKS5 / HTTP proxy configuration.
- */
-export async function setProxyConfig(req: ProxyUpdateRequest): Promise<ProxyConfig> {
-  return fetchJson<ProxyConfig>('/api/settings/proxy', {
-    method: 'POST',
-    body: JSON.stringify(req),
   });
 }
 
@@ -434,46 +338,6 @@ export function useCookieStatusesQuery() {
 }
 
 /**
- * Mutation hook for saving pasted cookies.
- */
-export function useSaveCookiesMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (req: CookieUpdateRequest) => savePastedCookies(req),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.cookies });
-    },
-  });
-}
-
-/**
- * Mutation hook for uploading cookie files.
- */
-export function useUploadCookieFileMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ platform, file }: { platform: string; file: File }) =>
-      uploadCookieFile(platform, file),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.cookies });
-    },
-  });
-}
-
-/**
- * Mutation hook for deleting platform cookies.
- */
-export function useDeleteCookiesMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (platform: string) => deleteCookies(platform),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.cookies });
-    },
-  });
-}
-
-/**
  * Query hook for proxy configuration.
  */
 export function useProxyConfigQuery() {
@@ -481,18 +345,5 @@ export function useProxyConfigQuery() {
     queryKey: QUERY_KEYS.proxy,
     queryFn: getProxyConfig,
     staleTime: 30_000,
-  });
-}
-
-/**
- * Mutation hook for updating runtime proxy.
- */
-export function useSetProxyConfigMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (req: ProxyUpdateRequest) => setProxyConfig(req),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.proxy });
-    },
   });
 }

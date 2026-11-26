@@ -10,8 +10,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.routers import download, inspect, progress, settings as settings_router
-from app.routers.download import wait_for_all_workers
 from app.services import cleaner, ffmpeg_service
+from app.services.progress_manager import wait_for_all_workers
 
 
 @asynccontextmanager

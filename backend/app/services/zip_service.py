@@ -3,6 +3,8 @@
 import zipfile
 from pathlib import Path
 
+from app.services import naming_service
+
 
 def create_zip_archive(files: list[Path], output_zip: Path) -> Path:
     """Bundle a list of file paths into a ZIP archive, keeping individual files intact.
@@ -18,18 +20,7 @@ def create_zip_archive(files: list[Path], output_zip: Path) -> Path:
             if not file_path.exists() or not file_path.is_file():
                 continue
 
-            base_name = file_path.name
-            stem = file_path.stem
-            suffix = file_path.suffix
-
-            # Ensure unique arcname in zip even with cascading name collisions (e.g. photo.jpg, photo.jpg, photo_1.jpg)
-            candidate = base_name
-            counter = 1
-            while candidate in used_arcnames:
-                candidate = f"{stem}_{counter}{suffix}"
-                counter += 1
-
-            used_arcnames.add(candidate)
-            zf.write(file_path, arcname=candidate)
+            arcname = naming_service.disambiguate_filename(file_path.name, used_arcnames)
+            zf.write(file_path, arcname=arcname)
 
     return output_zip

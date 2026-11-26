@@ -256,11 +256,12 @@ async def test_inspect_with_client_session_cookies_and_proxy(
             },
         )
         assert resp.status_code == 200
-        mock_inspect.assert_awaited_once_with(
-            "https://www.instagram.com/p/sample/",
-            proxy="socks5://127.0.0.1:9050",
-            cookies={"instagram": client_netscape},
-        )
+        assert mock_inspect.await_count == 1
+        args, kwargs = mock_inspect.await_args
+        assert args[0] == "https://www.instagram.com/p/sample/"
+        assert kwargs["proxy"] == "socks5://127.0.0.1:9050"
+        assert kwargs["cookies"] == {"instagram": client_netscape}
+        assert kwargs["context"].clean_url == "https://www.instagram.com/p/sample/"
 
     # Server config remains untouched
     assert not server_cookie_file.exists()
@@ -2074,7 +2075,7 @@ async def test_download_worker_cancellation_marks_task_error(
     async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
 ):
     """Verify that cancelling a background download worker marks the task as error in progress_manager."""
-    from app.routers.download import _active_workers
+    from app.services.progress_manager import _active_workers
 
     async def slow_download(*args, **kwargs):
         await asyncio.sleep(10)
@@ -2108,7 +2109,7 @@ async def test_wait_for_all_workers_cancels_on_timeout(
     async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
 ):
     """Verify wait_for_all_workers cancels active tasks when the timeout elapses."""
-    from app.routers.download import wait_for_all_workers
+    from app.services.progress_manager import wait_for_all_workers
 
     async def slow_download(*args, **kwargs):
         await asyncio.sleep(10)
@@ -2133,6 +2134,101 @@ async def test_wait_for_all_workers_cancels_on_timeout(
         assert task is not None
         assert task.status == "error"
         assert "cancelled" in (task.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_download_worker_redacts_proxy_secrets_on_unhandled_error(
+    async_client: httpx.AsyncClient,
+    temp_environment: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Verify spawn_task_worker redacts proxy secrets before storing unhandled exception errors."""
+    secret_proxy = "socks5://secret_user:secret_pass@internal.proxy:1080"
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", secret_proxy)
+
+    with patch(
+        "app.services.router.download",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError(
+            f"Unhandled failure via {secret_proxy} and http://u2:p2@ext.proxy:8080"
+        ),
+    ):
+        resp = await async_client.post(
+            "/api/download",
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+        )
+        assert resp.status_code == 200
+        task_id = resp.json()["task_id"]
+
+        for _ in range(50):
+            t = progress_manager.get_task(task_id)
+            if t and t.status == "error":
+                break
+            await asyncio.sleep(0.02)
+
+        task = progress_manager.get_task(task_id)
+        assert task is not None
+        assert task.status == "error"
+        assert task.error is not None
+        assert "secret_user" not in task.error
+        assert "secret_pass" not in task.error
+        assert "p2" not in task.error
+        assert "[REDACTED_PROXY]" in task.error
+        assert "http://u2:[REDACTED]@ext.proxy:8080" in task.error
+
+
+@pytest.mark.asyncio
+async def test_download_worker_postprocessing_stage_emits_postprocessing_event(
+    async_client: httpx.AsyncClient, temp_environment: dict[str, Path]
+):
+    """Verify progress_callback with stage='postprocessing' emits SSE postprocessing event."""
+
+    async def mock_download(task_id: str, request, progress_callback=None, **kwargs):
+        for _ in range(50):
+            if progress_manager._subscribers.get(task_id):
+                break
+            await asyncio.sleep(0.01)
+        if progress_callback is not None:
+            await progress_callback(
+                progress=95.0,
+                message="Extracting audio (1/1)...",
+                stage="postprocessing",
+            )
+        return DownloadResult(
+            task_id=task_id,
+            filename="audio.mp3",
+            file_path="/tmp/audio.mp3",
+            file_size=512,
+            download_url=f"/api/files/{task_id}/audio.mp3",
+            is_zip=False,
+        )
+
+    with patch("app.services.router.download", side_effect=mock_download):
+        resp = await async_client.post(
+            "/api/download",
+            json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "extract_audio": True},
+        )
+        assert resp.status_code == 200
+        task_id = resp.json()["task_id"]
+
+        events = await parse_sse_events(async_client, task_id, max_events=10)
+        post_events = [e for e in events if e["event"] == "postprocessing"]
+        assert len(post_events) >= 1
+        assert post_events[0]["data"]["status"] == "postprocessing"
+        assert post_events[0]["data"]["message"] == "Extracting audio (1/1)..."
+        assert events[-1]["event"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_progress_manager_lock_reentrancy_for_reads():
+    """Verify get_task and get_active_task_ids are lock-guarded and re-entrant under _lock."""
+    task = await progress_manager.create_task("task-reentrant-read")
+    async with progress_manager._lock:
+        fetched = progress_manager.get_task(task.task_id)
+        active_ids = progress_manager.get_active_task_ids()
+    assert fetched is task
+    assert task.task_id in active_ids
+    progress_manager.evict_task(task.task_id)
 
 
 

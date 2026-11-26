@@ -32,99 +32,46 @@ def sanitize_platform(platform: str) -> str:
     return cleaned
 
 
+_PLATFORM_ALIASES: dict[str, str] = {
+    "x": "twitter",
+    "ig": "instagram",
+    "yt": "youtube",
+    "tt": "tiktok",
+}
+_PLATFORM_FILE_ALIASES: dict[str, str] = {v: k for k, v in _PLATFORM_ALIASES.items()}
+
+
 def normalize_platform(platform: str) -> str:
     """Normalize platform name and aliases to canonical platform identifier."""
     cleaned = sanitize_platform(platform)
-    if cleaned in ("twitter", "x"):
-        return "twitter"
-    if cleaned in ("instagram", "ig"):
-        return "instagram"
-    if cleaned in ("youtube", "yt"):
-        return "youtube"
-    if cleaned in ("tiktok", "tt"):
-        return "tiktok"
-    return cleaned
-
-
-_runtime_default_cookie_paths: dict[str, Path] = {}
-
-
-def set_default_cookie_path(platform: str, path: Path | str | None) -> None:
-    """Set or remove runtime default cookie path for a platform."""
-    plat = normalize_platform(platform)
-    if path is None:
-        _runtime_default_cookie_paths.pop(plat, None)
-    else:
-        p = Path(path).resolve()
-        _runtime_default_cookie_paths[plat] = p
-
-
-def reset_runtime_default_cookies() -> None:
-    """Reset all runtime configured default cookie paths."""
-    _runtime_default_cookie_paths.clear()
-
-
-def validate_netscape_file(file_path: Path | str) -> tuple[bool, int, str | None]:
-    """Validate whether a file on disk contains valid Netscape HTTP cookies.
-
-    Returns: (is_valid, cookie_count, error_message)
-    """
-    p = Path(file_path)
-    if not p.exists():
-        return False, 0, f"Cookie file does not exist: {file_path}"
-    if not p.is_file():
-        return False, 0, f"Cookie path is not a regular file: {file_path}"
-    try:
-        content = p.read_text(encoding="utf-8", errors="replace")
-        return verify_netscape_content(content)
-    except Exception as e:
-        return False, 0, f"Failed to read cookie file: {e}"
+    return _PLATFORM_ALIASES.get(cleaned, cleaned)
 
 
 def _find_candidate_cookie_path(platform: str) -> Path:
-    """Find candidate cookie file path for a platform across runtime overrides, env vars, and storage dirs."""
+    """Find candidate cookie file path for a platform across env vars and storage dirs."""
     plat = normalize_platform(platform)
 
-    # 1. Runtime override
-    if plat in _runtime_default_cookie_paths:
-        return _runtime_default_cookie_paths[plat]
-
-    # 2. Platform environment variable
+    # 1. Platform environment variable
     env_attr = f"{plat.upper()}_COOKIES_FILE"
     env_val = getattr(settings, env_attr, None) or os.getenv(env_attr) or os.getenv(f"{plat.upper()}_COOKIE_FILE")
     if env_val:
         return Path(env_val).resolve()
 
     if plat == "twitter":
-        x_val = getattr(settings, "TWITTER_COOKIES_FILE", None) or os.getenv("X_COOKIES_FILE") or os.getenv("X_COOKIE_FILE")
+        x_val = os.getenv("X_COOKIES_FILE") or os.getenv("X_COOKIE_FILE")
         if x_val:
             return Path(x_val).resolve()
 
-    # 3. Default and primary cookies directories
-    settings.ensure_directories()
+    # 2. Default and primary cookies directories
     candidates = [
         settings.DEFAULT_COOKIES_DIR / f"{plat}.txt",
         settings.COOKIES_DIR / f"{plat}.txt",
     ]
-    if plat == "twitter":
+    alias = _PLATFORM_FILE_ALIASES.get(plat)
+    if alias:
         candidates.extend([
-            settings.DEFAULT_COOKIES_DIR / "x.txt",
-            settings.COOKIES_DIR / "x.txt",
-        ])
-    elif plat == "tiktok":
-        candidates.extend([
-            settings.DEFAULT_COOKIES_DIR / "tt.txt",
-            settings.COOKIES_DIR / "tt.txt",
-        ])
-    elif plat == "instagram":
-        candidates.extend([
-            settings.DEFAULT_COOKIES_DIR / "ig.txt",
-            settings.COOKIES_DIR / "ig.txt",
-        ])
-    elif plat == "youtube":
-        candidates.extend([
-            settings.DEFAULT_COOKIES_DIR / "yt.txt",
-            settings.COOKIES_DIR / "yt.txt",
+            settings.DEFAULT_COOKIES_DIR / f"{alias}.txt",
+            settings.COOKIES_DIR / f"{alias}.txt",
         ])
 
     for cand in candidates:
@@ -207,42 +154,49 @@ def parse_netscape_cookies(content: str) -> list[dict[str, Any]]:
     return cookies
 
 
-def verify_netscape_content(content: str) -> tuple[bool, int, str | None]:
-    """Verify that content matches Netscape HTTP cookie format.
-
-    Returns: (is_valid, cookie_count, error_message)
-    """
+def _parse_and_verify_netscape(content: str) -> tuple[bool, list[dict[str, Any]], str | None]:
+    """Parse Netscape cookie content and validate format in a single pass."""
     if not content or not content.strip():
-        return False, 0, "Cookie content is empty"
+        return False, [], "Cookie content is empty"
 
     cookies = parse_netscape_cookies(content)
     if not cookies:
         # Check if there is at least header
         if "# Netscape HTTP Cookie File" in content or "# HTTP Cookie File" in content:
-            return True, 0, "Valid header but no cookie entries found"
-        return False, 0, "Invalid format: no valid Netscape cookie entries found"
+            return True, [], "Valid header but no cookie entries found"
+        return False, [], "Invalid format: no valid Netscape cookie entries found"
 
-    return True, len(cookies), None
+    return True, cookies, None
+
+
+def verify_netscape_content(content: str) -> tuple[bool, int, str | None]:
+    """Verify that content matches Netscape HTTP cookie format.
+
+    Returns: (is_valid, cookie_count, error_message)
+    """
+    is_valid, cookies, err = _parse_and_verify_netscape(content)
+    return is_valid, len(cookies), err
 
 
 def get_cookie_file_path(platform: str) -> Path:
     """Get the cookie file path for a given platform, ensuring safe resolution inside COOKIES_DIR."""
     platform_clean = normalize_platform(platform)
-    settings.ensure_directories()
     target = (settings.COOKIES_DIR / f"{platform_clean}.txt").resolve()
     if not target.is_relative_to(settings.COOKIES_DIR.resolve()):
         raise ValueError(f"Path traversal detected in platform name: '{platform}'")
     return target
 
 
-def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus:
-    """Inspect cookie file for a platform and evaluate validity and expiration."""
+def _resolve_cookie_status(
+    platform: str, path: Path | None = None
+) -> tuple[Path | None, CookieStatus]:
+    """Resolve cookie file path and evaluate validity/expiration in a single parse."""
     try:
         platform_clean = normalize_platform(platform)
         if path is None:
             path = _find_candidate_cookie_path(platform_clean)
     except Exception as e:
-        return CookieStatus(
+        return None, CookieStatus(
             platform=platform,
             exists=False,
             valid=False,
@@ -252,7 +206,7 @@ def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus
         )
 
     if path is None or not path.exists():
-        return CookieStatus(
+        return None, CookieStatus(
             platform=platform_clean,
             exists=False,
             valid=False,
@@ -264,7 +218,7 @@ def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus
     try:
         content = path.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
-        return CookieStatus(
+        return path, CookieStatus(
             platform=platform_clean,
             exists=True,
             valid=False,
@@ -273,27 +227,16 @@ def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus
             details=f"Failed to read cookie file: {e}",
         )
 
-    # Netscape format verification
-    is_valid_format, cookie_count, err = verify_netscape_content(content)
-    if not is_valid_format or cookie_count == 0:
-        return CookieStatus(
+    # Single-pass Netscape format verification and parsing
+    is_valid_format, cookies, err = _parse_and_verify_netscape(content)
+    if not is_valid_format or not cookies:
+        return path, CookieStatus(
             platform=platform_clean,
             exists=True,
             valid=False,
             expires_at=None,
             cookie_count=0,
             details=err or "Cookie file is empty or corrupted",
-        )
-
-    cookies = parse_netscape_cookies(content)
-    if not cookies:
-        return CookieStatus(
-            platform=platform_clean,
-            exists=True,
-            valid=False,
-            expires_at=None,
-            cookie_count=0,
-            details="Cookie file is empty or corrupted",
         )
 
     # Check expiration of key session cookies for platform
@@ -319,7 +262,7 @@ def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus
     # If key cookie found and expired
     if key_cookie_found and is_key_expired:
         expires_iso = _safe_timestamp_to_iso(earliest_key_expiry)
-        return CookieStatus(
+        return path, CookieStatus(
             platform=platform_clean,
             exists=True,
             valid=False,
@@ -331,7 +274,7 @@ def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus
     # Key cookie found and valid
     if key_cookie_found and earliest_key_expiry:
         expires_iso = _safe_timestamp_to_iso(earliest_key_expiry)
-        return CookieStatus(
+        return path, CookieStatus(
             platform=platform_clean,
             exists=True,
             valid=True,
@@ -341,7 +284,7 @@ def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus
         )
 
     # Generic cookies found (no specific key cookie found or key cookie has no expiry / session-only)
-    return CookieStatus(
+    return path, CookieStatus(
         platform=platform_clean,
         exists=True,
         valid=True,
@@ -349,6 +292,11 @@ def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus
         cookie_count=len(cookies),
         details=f"Cookies loaded ({len(cookies)} total, no expiring key session cookie)",
     )
+
+
+def check_cookie_status(platform: str, path: Path | None = None) -> CookieStatus:
+    """Inspect cookie file for a platform and evaluate validity and expiration."""
+    return _resolve_cookie_status(platform, path=path)[1]
 
 
 def save_cookies(platform: str, content: str) -> CookieStatus:
@@ -369,8 +317,6 @@ def save_cookies(platform: str, content: str) -> CookieStatus:
         "# HTTP Cookie File"
     ):
         clean_content = "# Netscape HTTP Cookie File\n" + clean_content
-
-    _runtime_default_cookie_paths.pop(platform_clean, None)
 
     existing_mode = path.stat().st_mode if path.exists() else None
     temp_file = tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8")
@@ -393,7 +339,6 @@ def save_cookies(platform: str, content: str) -> CookieStatus:
 def delete_cookies(platform: str) -> bool:
     """Delete cookie file for platform."""
     plat = normalize_platform(platform)
-    _runtime_default_cookie_paths.pop(plat, None)
     deleted = False
     try:
         path = get_cookie_file_path(plat)
@@ -413,72 +358,12 @@ def get_all_cookie_statuses() -> dict[str, CookieStatus]:
 def get_default_cookie_path(platform: str) -> Path | None:
     """Return path to default cookie file if it exists and is valid Netscape format, else None."""
     try:
-        plat = normalize_platform(platform)
-        status = check_cookie_status(plat)
-        if status.exists and status.valid:
-            cand = _find_candidate_cookie_path(plat)
-            if cand and cand.exists():
-                return cand
+        resolved_path, status = _resolve_cookie_status(platform)
+        if status.exists and status.valid and resolved_path and resolved_path.exists():
+            return resolved_path
     except Exception:
         pass
     return None
-
-
-def get_cookie_path_for_platform(platform: str) -> Path | None:
-    """Return path to cookie file if exists and is valid, else None.
-
-    Delegates to get_default_cookie_path.
-    """
-    return get_default_cookie_path(platform)
-
-
-def load_default_cookie(platform: str) -> str | None:
-    """Load and return text content of default cookie file for a platform if valid, else None."""
-    path = get_default_cookie_path(platform)
-    if not path or not path.exists():
-        return None
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return None
-
-
-def load_default_cookie_file(platform: str, file_path: Path | str) -> CookieStatus:
-    """Load, validate, and store a default cookie file for a platform."""
-    plat = normalize_platform(platform)
-    p = Path(file_path)
-    if not p.exists() or not p.is_file():
-        raise ValueError(f"Cookie file not found: {file_path}")
-    content = p.read_text(encoding="utf-8", errors="replace")
-    return save_cookies(plat, content)
-
-
-def configure_default_cookie(platform: str, path_or_content: str | Path) -> CookieStatus:
-    """Configure default cookie for platform from a file path or Netscape cookie content string."""
-    plat = normalize_platform(platform)
-    if isinstance(path_or_content, Path) or (
-        isinstance(path_or_content, str)
-        and "\n" not in path_or_content
-        and (Path(path_or_content).exists() or "/" in path_or_content or "\\" in path_or_content)
-    ):
-        file_path = Path(path_or_content)
-        if not file_path.exists() or not file_path.is_file():
-            raise ValueError(f"Cookie file does not exist: {file_path}")
-        is_valid, count, err = validate_netscape_file(file_path)
-        if not is_valid or count == 0:
-            raise ValueError(err or f"Invalid Netscape cookie file at {file_path}")
-        set_default_cookie_path(plat, file_path)
-        return check_cookie_status(plat)
-    else:
-        return save_cookies(plat, str(path_or_content))
-
-
-def resolve_active_cookie_path(
-    platform: str,
-    client_cookies: dict[str, str | None] | str | None = None,
-) -> Path | None:
-    """Non-context helper to resolve default cookie path when no client cookies are provided."""
-    return get_default_cookie_path(platform)
 
 
 @contextlib.asynccontextmanager

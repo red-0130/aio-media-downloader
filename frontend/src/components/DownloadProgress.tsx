@@ -228,6 +228,8 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
               <CheckCircle2 className="w-5 h-5 text-emerald-400" />
             ) : status === 'error' ? (
               <AlertTriangle className="w-5 h-5 text-rose-400" />
+            ) : status === 'idle' ? (
+              <XCircle className="w-5 h-5 text-amber-400" />
             ) : (
               <Activity className="w-5 h-5 text-indigo-400 animate-pulse" />
             )}
@@ -237,6 +239,8 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
                 ? 'Download Ready'
                 : status === 'error'
                 ? 'Task Failed'
+                : status === 'idle'
+                ? 'Download Cancelled'
                 : isPostProcessing
                 ? 'Post-Processing Media...'
                 : 'Downloading Media...'}
@@ -253,7 +257,7 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
                 onClick={onCancel}
               />
             )}
-            {(isComplete || status === 'error') && onReset && (
+            {(isComplete || status === 'error' || status === 'idle') && onReset && (
               <Button
                 variant="secondary"
                 size="sm"
@@ -266,7 +270,7 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
         </HStack>
 
         {/* Live Telemetry Progress Bar */}
-        {!isComplete && status !== 'error' && (
+        {!isComplete && status !== 'error' && status !== 'idle' && (
           <VStack gap={2} width="100%">
             <ProgressBar
               label="Download Progress"
@@ -303,6 +307,15 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
               )}
             </HStack>
           </VStack>
+        )}
+
+        {/* Cancelled Notice Banner */}
+        {status === 'idle' && !isComplete && (
+          <Banner
+            status="warning"
+            title="Download Cancelled"
+            description={message || 'The active download was cancelled.'}
+          />
         )}
 
         {/* Error Alert Banner */}

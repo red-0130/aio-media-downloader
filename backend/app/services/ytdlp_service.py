@@ -1,6 +1,6 @@
 """yt-dlp wrapper service with async subprocess execution and progress parsing."""
 
-import asyncio
+import inspect
 import json
 import re
 import shutil
@@ -9,6 +9,13 @@ from typing import Any, Callable
 
 from app.config import settings
 from app.services import ffmpeg_service
+from app.services._exec import (
+    AuthRequiredError as AuthRequiredError,
+    ExtractionError as ExtractionError,
+    RateLimitError as RateLimitError,
+    classify_error as classify_error,
+    run_subprocess,
+)
 
 # Regex patterns for parsing yt-dlp stdout progress
 PROGRESS_PATTERN = re.compile(
@@ -17,21 +24,6 @@ PROGRESS_PATTERN = re.compile(
 PROGRESS_SIMPLE_PATTERN = re.compile(
     r"\[download\]\s+(?P<percent>\d+(?:\.\d+)?)%"
 )
-
-
-class ExtractionError(Exception):
-    """Generic media extraction failure."""
-    pass
-
-
-class AuthRequiredError(ExtractionError):
-    """Authentication required to access media (login wall, private post)."""
-    pass
-
-
-class RateLimitError(ExtractionError):
-    """Platform rate limit reached (HTTP 429)."""
-    pass
 
 
 def get_js_runtime_args() -> list[str]:
@@ -58,85 +50,6 @@ def get_extractor_args_for_url(url: str) -> list[str]:
         if clients:
             args.extend(["--extractor-args", f"youtube:player_client={clients}"])
     return args
-
-
-def classify_error(stderr_text: str) -> Exception:
-    """Analyze stderr or extractor output and return appropriate specialized exception."""
-    if settings.SOCKS5_PROXY:
-        stderr_text = stderr_text.replace(settings.SOCKS5_PROXY, "[REDACTED_PROXY]")
-        try:
-            import urllib.parse
-            parsed = urllib.parse.urlsplit(settings.SOCKS5_PROXY)
-            if parsed.netloc and parsed.netloc in stderr_text:
-                stderr_text = stderr_text.replace(parsed.netloc, "[REDACTED_PROXY]")
-            if parsed.password and parsed.password in stderr_text:
-                stderr_text = stderr_text.replace(parsed.password, "[REDACTED]")
-        except Exception:
-            pass
-
-    stderr_text = re.sub(r"://([^\s/@:]*):([^\s/@]*)@", r"://\1:[REDACTED]@", stderr_text)
-
-    text_lower = stderr_text.lower()
-
-    # 1. Age-restricted or private media (strictly requires user account cookies)
-    if any(
-        term in text_lower
-        for term in (
-            "confirm your age",
-            "age-restricted",
-            "sign in to confirm your age",
-            "private video",
-            "this video is private",
-            "private account",
-            "this account is private",
-            "members-only",
-        )
-    ):
-        return AuthRequiredError(
-            f"Authentication required: Age-restricted or private content. Please supply authenticated cookies in Settings. ({stderr_text.strip()})"
-        )
-
-    # 2. Platform Bot / Login walls
-    if any(
-        term in text_lower
-        for term in (
-            "sign in to confirm",
-            "sign in to",
-            "login required",
-            "login_required",
-            "login page",
-            "redirect to login",
-            "accounts/login",
-            "checkpoint_required",
-            "protected tweets",
-            "registered users",
-            "requires authentication",
-            "authentication required",
-            "could not authenticate you",
-            "http error 401",
-            "http error 403",
-            "'unavailable'",
-        )
-    ):
-        return AuthRequiredError(
-            f"Authentication required: Bot verification or login required. Try alternate player clients or provide cookies in Settings. ({stderr_text.strip()})"
-        )
-
-    if any(
-        term in text_lower
-        for term in (
-            "http error 429",
-            "too many requests",
-            "rate limit",
-            "rate-limited",
-            "exceeded the rate-limit",
-        )
-    ):
-        return RateLimitError(
-            f"Rate limited by platform. Please wait or configure a proxy in Settings. ({stderr_text.strip()})"
-        )
-
-    return ExtractionError(f"Extraction failed: {stderr_text.strip()}")
 
 
 def _parse_eta(eta_str: str) -> int | None:
@@ -179,31 +92,11 @@ async def inspect_url(
 
     cmd.append(url)
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await process.communicate()
-    finally:
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            except Exception:
-                pass
-            try:
-                await asyncio.shield(process.wait())
-            except (asyncio.CancelledError, Exception):
-                pass
+    returncode, raw_stdout, err_msg = await run_subprocess(cmd)
+    if returncode != 0:
+        raise classify_error(err_msg, extra_proxies=(proxy,))
 
-    if process.returncode != 0:
-        err_msg = stderr.decode("utf-8", errors="replace")
-        raise classify_error(err_msg)
-
-    raw_json = stdout.decode("utf-8", errors="replace").strip()
+    raw_json = raw_stdout.strip()
     if not raw_json:
         raise ExtractionError("yt-dlp produced empty metadata")
 
@@ -275,81 +168,34 @@ async def download_media(
 
     cmd.append(url)
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    async def _on_stdout_line(line: str) -> None:
+        if not progress_callback:
+            return
+        match = PROGRESS_PATTERN.search(line)
+        if match:
+            res = progress_callback(
+                progress=float(match.group("percent")),
+                speed=match.group("speed"),
+                eta=_parse_eta(match.group("eta")),
+                message=f"Downloading: {float(match.group('percent')):.1f}%",
+            )
+            if inspect.isawaitable(res):
+                await res
+            return
 
-    stderr_lines: list[str] = []
-    stderr_task: asyncio.Task | None = None
+        simple_match = PROGRESS_SIMPLE_PATTERN.search(line)
+        if simple_match:
+            percent = float(simple_match.group("percent"))
+            res = progress_callback(
+                progress=percent,
+                message=f"Downloading: {percent:.1f}%",
+            )
+            if inspect.isawaitable(res):
+                await res
 
-    try:
-        async def read_stderr():
-            if process.stderr:
-                while True:
-                    line = await process.stderr.readline()
-                    if not line:
-                        break
-                    stderr_lines.append(line.decode("utf-8", errors="replace"))
-
-        stderr_task = asyncio.create_task(read_stderr())
-
-        if process.stdout:
-            while True:
-                line_bytes = await process.stdout.readline()
-                if not line_bytes:
-                    break
-                line = line_bytes.decode("utf-8", errors="replace").strip()
-
-                match = PROGRESS_PATTERN.search(line)
-                if match and progress_callback:
-                    percent = float(match.group("percent"))
-                    speed = match.group("speed")
-                    eta = _parse_eta(match.group("eta"))
-                    res = progress_callback(
-                        progress=percent,
-                        speed=speed,
-                        eta=eta,
-                        message=f"Downloading: {percent:.1f}%",
-                    )
-                    if asyncio.iscoroutine(res):
-                        await res
-                else:
-                    simple_match = PROGRESS_SIMPLE_PATTERN.search(line)
-                    if simple_match and progress_callback:
-                        percent = float(simple_match.group("percent"))
-                        res = progress_callback(
-                            progress=percent,
-                            message=f"Downloading: {percent:.1f}%",
-                        )
-                        if asyncio.iscoroutine(res):
-                            await res
-
-        await process.wait()
-        await stderr_task
-    finally:
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            except Exception:
-                pass
-            try:
-                await asyncio.shield(process.wait())
-            except (asyncio.CancelledError, Exception):
-                pass
-        if stderr_task is not None and not stderr_task.done():
-            stderr_task.cancel()
-            try:
-                await stderr_task
-            except (asyncio.CancelledError, Exception):
-                pass
-
-    if process.returncode != 0:
-        full_err = "".join(stderr_lines)
-        raise classify_error(full_err)
+    returncode, _stdout, full_err = await run_subprocess(cmd, on_stdout_line=_on_stdout_line)
+    if returncode != 0:
+        raise classify_error(full_err, extra_proxies=(proxy,))
 
     # Collect downloaded files in output_dir, excluding hidden, temporary, or cookie files
     files = [

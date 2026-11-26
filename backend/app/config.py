@@ -94,4 +94,3 @@ class Settings(BaseModel):
 
 
 settings = Settings()
-settings.ensure_directories()

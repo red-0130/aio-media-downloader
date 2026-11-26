@@ -341,11 +341,13 @@ async def test_router_download_instagram_fallback_probe_passes_client_cookies(te
         assert res.task_id == task_id
         assert "ig_creator" in res.filename
 
-        mock_inspect.assert_awaited_once_with(
-            "https://www.instagram.com/p/sample123/",
-            proxy="socks5://127.0.0.1:9050",
-            cookies=client_cookies,
-        )
+        assert mock_inspect.await_count == 1
+        args, kwargs = mock_inspect.await_args
+        assert args == ("https://www.instagram.com/p/sample123/",)
+        assert kwargs["proxy"] == "socks5://127.0.0.1:9050"
+        assert kwargs["cookies"] == client_cookies
+        assert isinstance(kwargs["context"], router.RequestContext)
+        assert kwargs["context"].clean_url == "https://www.instagram.com/p/sample123/"
 
 
 @pytest.mark.asyncio
@@ -986,7 +988,7 @@ async def test_download_gallery_videos_audio_extraction_progress_callback(temp_e
     progress_events = []
 
     async def on_progress(progress, message=None, **kwargs):
-        progress_events.append((progress, message))
+        progress_events.append((progress, message, kwargs.get("stage")))
 
     async def fake_extract(input_file, output_file, audio_format="mp3", bitrate="320k"):
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1006,10 +1008,40 @@ async def test_download_gallery_videos_audio_extraction_progress_callback(temp_e
 
         await router.download(task_id, req, progress_callback=on_progress)
 
-        messages = [msg for _, msg in progress_events if msg and "Extracting audio" in msg]
-        assert len(messages) == 2
-        assert "Extracting audio (1/2)..." in messages[0]
-        assert "Extracting audio (2/2)..." in messages[1]
+        extraction_events = [
+            (msg, stage)
+            for _, msg, stage in progress_events
+            if msg and "Extracting audio" in msg
+        ]
+        assert len(extraction_events) == 2
+        assert "Extracting audio (1/2)..." in extraction_events[0][0]
+        assert "Extracting audio (2/2)..." in extraction_events[1][0]
+        assert all(stage == "postprocessing" for _, stage in extraction_events)
+
+
+@pytest.mark.asyncio
+async def test_prepare_context_validates_once_across_download_and_ig_probe(temp_environment):
+    """Verify passing RequestContext skips redundant URL/proxy/cookie validation even on IG probe."""
+    task_id = "test-ctx-once"
+    task_dir = temp_environment["downloads_dir"] / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    fake_file = task_dir / "post.jpg"
+    fake_file.write_bytes(b"img")
+
+    with patch("app.services.security.is_safe_url_async", new_callable=AsyncMock, return_value=True) as mock_safe, \
+         patch("app.services.gallerydl_service.download_items", new_callable=AsyncMock, return_value=[fake_file]), \
+         patch("app.services.gallerydl_service.inspect_url", new_callable=AsyncMock) as mock_g_inspect:
+        mock_g_inspect.return_value = [{"post_id": "p1", "user": "alice", "extension": "jpg"}]
+
+        ctx = await router.prepare_context("  https://www.instagram.com/p/p1/  ")
+        assert ctx.clean_url == "https://www.instagram.com/p/p1/"
+        assert ctx.platform == "instagram"
+        assert mock_safe.await_count == 1
+
+        req = DownloadRequest(url="https://www.instagram.com/p/p1/")
+        res = await router.download(task_id, req, context=ctx)
+        assert "alice" in res.filename
+        assert mock_safe.await_count == 1
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,8 @@
 """API route handler for download task execution and file retrieval."""
 
-import asyncio
 from collections.abc import AsyncIterator
 import mimetypes
 import os
-from pathlib import Path
 from typing import Annotated
 import urllib.parse
 
@@ -14,24 +12,9 @@ from fastapi.responses import StreamingResponse
 
 from app.config import settings
 from app.models.download import DownloadRequest, DownloadResponse, DownloadResult
-from app.services import cookie_manager, progress_manager, proxy_manager, router as media_router, security
+from app.services import progress_manager, router as media_router, security
 
 router = APIRouter()
-_active_workers: set[asyncio.Task] = set()
-
-_download_semaphores: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
-
-
-def get_download_semaphore() -> asyncio.Semaphore:
-    """Return semaphore for current event loop to bound concurrent downloads."""
-    global _download_semaphores
-    loop = asyncio.get_running_loop()
-    sem = _download_semaphores.get(loop)
-    if sem is None:
-        _download_semaphores = {lp: s for lp, s in _download_semaphores.items() if not lp.is_closed()}
-        sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
-        _download_semaphores[loop] = sem
-    return sem
 
 CONTENT_TYPES = {
     ".mp4": "video/mp4",
@@ -46,132 +29,67 @@ CONTENT_TYPES = {
 }
 
 
-async def wait_for_all_workers(timeout: float = 2.0) -> None:
-    """Await all background download tasks or cancel on timeout."""
-    if not _active_workers:
-        return
-    tasks = list(_active_workers)
-    try:
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
-    except (Exception, asyncio.CancelledError):
-        for t in tasks:
-            if not t.done():
-                t.cancel()
-        if tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
-                    timeout=timeout,
-                )
-            except Exception:
-                pass
-
-
 @router.post("/download", response_model=DownloadResponse)
 async def start_download(request: DownloadRequest):
     """Initiate an asynchronous media download job."""
-    url = request.url
-    if not url or not isinstance(url, str) or not url.strip():
+    try:
+        ctx = await media_router.prepare_context(
+            request.url,
+            proxy=request.proxy,
+            cookies=request.cookies,
+        )
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="URL cannot be empty",
+            detail=str(exc),
         )
-
-    clean_url = url.strip()
-    if not await security.is_safe_url_async(clean_url):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid or disallowed URL (SSRF protection): {url}",
-        )
-
-    # Validate client proxy if provided, else fall back to server configuration
-    effective_proxy = (
-        request.proxy.strip()
-        if (request.proxy and request.proxy.strip())
-        else proxy_manager.get_proxy()
-    )
-    if effective_proxy:
-        try:
-            proxy_manager.validate_proxy_url(effective_proxy)
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(e),
-            )
-
-    # Pre-validate client session cookies format if provided
-    if request.cookies:
-        if isinstance(request.cookies, str):
-            if request.cookies.strip():
-                is_valid, _, err = cookie_manager.verify_netscape_content(request.cookies)
-                if not is_valid:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Invalid client cookie format: {err}",
-                    )
-        elif isinstance(request.cookies, dict):
-            for plat, val in request.cookies.items():
-                if val and isinstance(val, str) and val.strip():
-                    is_valid, _, err = cookie_manager.verify_netscape_content(val)
-                    if not is_valid:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"Invalid client cookie format for platform '{plat}': {err}",
-                        )
 
     task = await progress_manager.create_task()
     task_id = task.task_id
 
-    async def run_worker():
-        try:
-            async with get_download_semaphore():
-                async def on_progress(
-                    progress: float,
-                    speed: str | None = None,
-                    eta: int | None = None,
-                    message: str | None = None,
-                    **kwargs,
-                ):
-                    await progress_manager.update_progress(
-                        task_id=task_id,
-                        progress=progress,
-                        speed=speed,
-                        eta=eta,
-                        message=message,
-                    )
-
-                result: DownloadResult = await media_router.download(
+    async def _run_download() -> None:
+        async def on_progress(
+            progress: float,
+            speed: str | None = None,
+            eta: int | None = None,
+            message: str | None = None,
+            **kwargs,
+        ):
+            if kwargs.get("stage") == "postprocessing":
+                await progress_manager.set_postprocessing(
                     task_id=task_id,
-                    request=request,
-                    progress_callback=on_progress,
-                    proxy=effective_proxy,
-                    cookies=request.cookies,
+                    message=message or "Processing media...",
                 )
+                return
+            await progress_manager.update_progress(
+                task_id=task_id,
+                progress=progress,
+                speed=speed,
+                eta=eta,
+                message=message,
+            )
 
-                files_payload = (
-                    [f.model_dump() for f in result.files] if result.files else None
-                )
-                await progress_manager.set_completed(
-                    task_id=task_id,
-                    filename=result.filename,
-                    download_url=result.download_url,
-                    file_size=result.file_size,
-                    files=files_payload,
-                )
-        except asyncio.CancelledError:
-            try:
-                await asyncio.shield(
-                    progress_manager.set_error(task_id=task_id, error_message="Task was cancelled")
-                )
-            except (asyncio.CancelledError, Exception):
-                pass
-            raise
-        except Exception as exc:
-            await progress_manager.set_error(task_id=task_id, error_message=str(exc))
+        result: DownloadResult = await media_router.download(
+            task_id=task_id,
+            request=request,
+            progress_callback=on_progress,
+            proxy=ctx.effective_proxy,
+            cookies=ctx.client_cookies,
+            context=ctx,
+        )
 
-    worker_task = asyncio.create_task(run_worker())
-    _active_workers.add(worker_task)
-    worker_task.add_done_callback(_active_workers.discard)
+        files_payload = (
+            [f.model_dump() for f in result.files] if result.files else None
+        )
+        await progress_manager.set_completed(
+            task_id=task_id,
+            filename=result.filename,
+            download_url=result.download_url,
+            file_size=result.file_size,
+            files=files_payload,
+        )
+
+    progress_manager.spawn_task_worker(task_id, _run_download)
 
     return DownloadResponse(task_id=task_id, status="queued")
 

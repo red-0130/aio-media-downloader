@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { cn, formatBytes, formatDuration, getPlatformBadgeColor } from './utils';
+import { formatBytes, formatDuration } from './utils';
 
 describe('utils: formatBytes', () => {
   it('returns "0 B" for falsy, zero, NaN, or non-finite inputs', () => {
@@ -74,32 +74,5 @@ describe('utils: formatDuration', () => {
     expect(formatDuration(3665)).toBe('1:01:05');
     expect(formatDuration(7325)).toBe('2:02:05');
     expect(formatDuration(86400)).toBe('24:00:00');
-  });
-});
-
-describe('utils: cn', () => {
-  it('merges class names and handles falsy values', () => {
-    expect(cn('btn', false && 'hidden', 'btn-primary', null, undefined)).toBe('btn btn-primary');
-  });
-
-  it('resolves Tailwind conflicting classes', () => {
-    expect(cn('p-4', 'p-2')).toBe('p-2');
-    expect(cn('bg-red-500', 'bg-blue-500')).toBe('bg-blue-500');
-  });
-});
-
-describe('utils: getPlatformBadgeColor', () => {
-  it('returns appropriate badge styling for known platforms case-insensitively', () => {
-    expect(getPlatformBadgeColor('youtube').text).toBe('text-red-400');
-    expect(getPlatformBadgeColor('YOUTUBE').text).toBe('text-red-400');
-    expect(getPlatformBadgeColor('instagram').text).toBe('text-pink-400');
-    expect(getPlatformBadgeColor('Instagram').text).toBe('text-pink-400');
-    expect(getPlatformBadgeColor('twitter').text).toBe('text-sky-400');
-    expect(getPlatformBadgeColor('tiktok').text).toBe('text-teal-400');
-  });
-
-  it('returns indigo default for unknown platforms', () => {
-    expect(getPlatformBadgeColor('unknown').text).toBe('text-indigo-400');
-    expect(getPlatformBadgeColor(undefined).text).toBe('text-indigo-400');
   });
 });

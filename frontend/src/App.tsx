@@ -40,6 +40,108 @@ import {
 import { useSSEProgress } from './hooks/useSSEProgress';
 import type { AudioFormat, InspectResponse } from './types/api';
 
+function isMultiItemMedia(data: InspectResponse | null | undefined): boolean {
+  if (!data) return false;
+  return (
+    data.media_type === 'carousel' ||
+    data.media_type === 'story' ||
+    Boolean(data.items && data.items.length > 1)
+  );
+}
+
+interface ActionCommandBarProps {
+  compact: boolean;
+  isMultiItem: boolean;
+  selectedCount: number;
+  extractAudio: boolean;
+  audioFormat: AudioFormat;
+  selectedFormatId: string;
+  packageAsZip: boolean;
+  isPending: boolean;
+  onReset: () => void;
+  onStart: () => void;
+}
+
+const ActionCommandBar: React.FC<ActionCommandBarProps> = ({
+  compact,
+  isMultiItem,
+  selectedCount,
+  extractAudio,
+  audioFormat,
+  selectedFormatId,
+  packageAsZip,
+  isPending,
+  onReset,
+  onStart,
+}) => {
+  const summaryTitle = compact
+    ? isMultiItem
+      ? `${selectedCount} item(s) selected`
+      : extractAudio
+      ? `Audio (${audioFormat.toUpperCase()})`
+      : selectedFormatId
+    : isMultiItem
+    ? `Ready to download ${selectedCount} item(s)${packageAsZip ? ' packaged as .ZIP' : ''}`
+    : `Ready to download in ${extractAudio ? `Audio (${audioFormat.toUpperCase()})` : selectedFormatId}`;
+
+  const summarySubtitle = compact
+    ? isMultiItem && packageAsZip
+      ? 'Bundle as .ZIP'
+      : 'Ready to download'
+    : 'Click Start Download to initialize worker task';
+
+  const summaryBlock = (
+    <VStack gap={0}>
+      <Text weight="semibold" maxLines={compact ? 1 : undefined}>
+        {summaryTitle}
+      </Text>
+      <Text type="supporting" color="secondary" maxLines={compact ? 1 : undefined}>
+        {summarySubtitle}
+      </Text>
+    </VStack>
+  );
+
+  return (
+    <Card
+      padding={compact ? 2 : 3}
+      variant={compact ? 'transparent' : undefined}
+      elevation={compact ? undefined : 'high'}
+      width="100%"
+    >
+      <HStack
+        gap={compact ? 2 : 3}
+        align="center"
+        justify="between"
+        width="100%"
+        wrap={compact ? undefined : 'wrap'}
+      >
+        {compact ? <StackItem size="fill">{summaryBlock}</StackItem> : summaryBlock}
+
+        <HStack gap={compact ? 1.5 : 2} align="center">
+          <Button
+            variant="secondary"
+            size="md"
+            isIconOnly={compact}
+            icon={<RotateCcw className="w-4 h-4" />}
+            label="Start Over"
+            onClick={onReset}
+          />
+
+          <Button
+            variant="primary"
+            size="md"
+            icon={<Download className="w-4 h-4" />}
+            label={isPending ? (compact ? 'Queuing...' : 'Queuing Task...') : 'Start Download'}
+            isLoading={isPending}
+            isDisabled={isPending || (isMultiItem && selectedCount === 0)}
+            onClick={onStart}
+          />
+        </HStack>
+      </HStack>
+    </Card>
+  );
+};
+
 export const App: React.FC = () => {
   const isMobile = useMediaQuery('(max-width: 768px)');
 
@@ -104,15 +206,7 @@ export const App: React.FC = () => {
       }
 
       // Default ZIP packaging to true for carousels/stories
-      if (
-        result.media_type === 'carousel' ||
-        result.media_type === 'story' ||
-        (result.items && result.items.length > 1)
-      ) {
-        setPackageAsZip(true);
-      } else {
-        setPackageAsZip(false);
-      }
+      setPackageAsZip(isMultiItemMedia(result));
     } catch (err) {
       if (err instanceof ApiError) {
         setInspectError({
@@ -132,10 +226,7 @@ export const App: React.FC = () => {
   const handleStartDownload = async () => {
     if (!inspectData) return;
 
-    const isMulti =
-      inspectData.media_type === 'carousel' ||
-      inspectData.media_type === 'story' ||
-      (inspectData.items && inspectData.items.length > 1);
+    const isMulti = isMultiItemMedia(inspectData);
 
     if (isMulti && selectedIndices.length === 0) {
       setInspectError({
@@ -144,6 +235,7 @@ export const App: React.FC = () => {
       return;
     }
 
+    setInspectError(null);
     try {
       const response = await downloadMutation.mutateAsync({
         url: inspectData.url,
@@ -167,6 +259,10 @@ export const App: React.FC = () => {
     setUrl('');
     setInspectData(null);
     setInspectError(null);
+    setSelectedFormatId('best');
+    setExtractAudio(false);
+    setPackageAsZip(true);
+    setSelectedIndices([]);
     setActiveTaskId(null);
     sse.reset();
   };
@@ -177,6 +273,7 @@ export const App: React.FC = () => {
       if (lower.includes('youtube.com') || lower.includes('youtu.be')) return 'youtube';
       if (lower.includes('twitter.com') || lower.includes('x.com')) return 'twitter';
       if (lower.includes('instagram.com') || lower.includes('instagr.am')) return 'instagram';
+      if (lower.includes('tiktok.com')) return 'tiktok';
     } catch {
       // Ignore
     }
@@ -189,10 +286,7 @@ export const App: React.FC = () => {
   };
 
   const hasItems = inspectData?.items && inspectData.items.length > 0;
-  const isMultiItem =
-    inspectData?.media_type === 'carousel' ||
-    inspectData?.media_type === 'story' ||
-    (inspectData?.items && inspectData.items.length > 1);
+  const isMultiItem = isMultiItemMedia(inspectData);
 
   return (
     <Layout
@@ -206,45 +300,18 @@ export const App: React.FC = () => {
       footer={
         <LayoutFooter hasDivider>
           {isMobile && inspectData && !activeTaskId ? (
-            <Card padding={2} variant="transparent" width="100%">
-              <HStack gap={2} align="center" justify="between" width="100%">
-                <StackItem size="fill">
-                  <VStack gap={0}>
-                    <Text weight="semibold" maxLines={1}>
-                      {isMultiItem
-                        ? `${selectedIndices.length} item(s) selected`
-                        : extractAudio
-                        ? `Audio (${audioFormat.toUpperCase()})`
-                        : selectedFormatId}
-                    </Text>
-                    <Text type="supporting" color="secondary" maxLines={1}>
-                      {isMultiItem && packageAsZip ? 'Bundle as .ZIP' : 'Ready to download'}
-                    </Text>
-                  </VStack>
-                </StackItem>
-
-                <HStack gap={1.5} align="center">
-                  <Button
-                    variant="secondary"
-                    size="md"
-                    isIconOnly
-                    icon={<RotateCcw className="w-4 h-4" />}
-                    label="Start Over"
-                    onClick={handleResetAll}
-                  />
-
-                  <Button
-                    variant="primary"
-                    size="md"
-                    icon={<Download className="w-4 h-4" />}
-                    label={downloadMutation.isPending ? 'Queuing...' : 'Start Download'}
-                    isLoading={downloadMutation.isPending}
-                    isDisabled={downloadMutation.isPending || (isMultiItem && selectedIndices.length === 0)}
-                    onClick={handleStartDownload}
-                  />
-                </HStack>
-              </HStack>
-            </Card>
+            <ActionCommandBar
+              compact
+              isMultiItem={isMultiItem}
+              selectedCount={selectedIndices.length}
+              extractAudio={extractAudio}
+              audioFormat={audioFormat}
+              selectedFormatId={selectedFormatId}
+              packageAsZip={packageAsZip}
+              isPending={downloadMutation.isPending}
+              onReset={handleResetAll}
+              onStart={handleStartDownload}
+            />
           ) : isMobile ? (
             <VStack gap={2} align="center" justify="center" width="100%">
               <HStack gap={2} align="center" justify="center" wrap="wrap">
@@ -365,40 +432,18 @@ export const App: React.FC = () => {
 
               {/* Action Command Bar (Desktop Stage) */}
               {!isMobile && (
-                <Card padding={3} elevation="high" width="100%">
-                  <HStack gap={3} align="center" justify="between" width="100%" wrap="wrap">
-                    <VStack gap={0}>
-                      <Text weight="semibold">
-                        {isMultiItem
-                          ? `Ready to download ${selectedIndices.length} item(s)${packageAsZip ? ' packaged as .ZIP' : ''}`
-                          : `Ready to download in ${extractAudio ? `Audio (${audioFormat.toUpperCase()})` : selectedFormatId}`}
-                      </Text>
-                      <Text type="supporting" color="secondary">
-                        Click Start Download to initialize worker task
-                      </Text>
-                    </VStack>
-
-                    <HStack gap={2} align="center">
-                      <Button
-                        variant="secondary"
-                        size="md"
-                        icon={<RotateCcw className="w-4 h-4" />}
-                        label="Start Over"
-                        onClick={handleResetAll}
-                      />
-
-                      <Button
-                        variant="primary"
-                        size="md"
-                        icon={<Download className="w-4 h-4" />}
-                        label={downloadMutation.isPending ? 'Queuing Task...' : 'Start Download'}
-                        isLoading={downloadMutation.isPending}
-                        isDisabled={downloadMutation.isPending || (isMultiItem && selectedIndices.length === 0)}
-                        onClick={handleStartDownload}
-                      />
-                    </HStack>
-                  </HStack>
-                </Card>
+                <ActionCommandBar
+                  compact={false}
+                  isMultiItem={isMultiItem}
+                  selectedCount={selectedIndices.length}
+                  extractAudio={extractAudio}
+                  audioFormat={audioFormat}
+                  selectedFormatId={selectedFormatId}
+                  packageAsZip={packageAsZip}
+                  isPending={downloadMutation.isPending}
+                  onReset={handleResetAll}
+                  onStart={handleStartDownload}
+                />
               )}
             </VStack>
           )}
@@ -419,7 +464,10 @@ export const App: React.FC = () => {
               isDownloading={sse.isDownloading}
               isComplete={sse.isComplete}
               onReset={handleResetAll}
-              onCancel={sse.cancel}
+              onCancel={() => {
+                sse.cancel();
+                setActiveTaskId(null);
+              }}
             />
           )}
         </VStack>

@@ -117,13 +117,13 @@ export function useSSEProgress(
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
-    isTerminalRef.current = true;
     setConnectionState('disconnected');
-    if (status !== 'completed' && status !== 'error') {
+    if (!isTerminalRef.current) {
+      isTerminalRef.current = true;
       setStatus('idle');
       setMessage('Download cancelled');
     }
-  }, [status]);
+  }, []);
 
   useEffect(() => {
     if (!taskId) {
@@ -200,10 +200,7 @@ export function useSSEProgress(
         callbacksRef.current.onComplete?.(data);
 
         if (callbacksRef.current.autoDownload && data.download_url) {
-          const safeUrl = data.download_url.includes('#')
-            ? data.download_url.replace(/#/g, '%23')
-            : data.download_url;
-          triggerBrowserDownload(safeUrl, data.filename);
+          triggerBrowserDownload(data.download_url, data.filename);
         }
       } catch (e) {
         console.error('Failed to parse complete event:', e);

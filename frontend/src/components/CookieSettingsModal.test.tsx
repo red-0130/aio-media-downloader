@@ -17,6 +17,7 @@ describe('CookieSettingsModal Component (R2 Acceptance Criteria)', () => {
     instagram: { platform: 'instagram', exists: false, valid: false, cookie_count: 0, details: null },
     twitter: { platform: 'twitter', exists: false, valid: false, cookie_count: 0, details: null },
     youtube: { platform: 'youtube', exists: false, valid: false, cookie_count: 0, details: null },
+    tiktok: { platform: 'tiktok', exists: false, valid: false, cookie_count: 0, details: null },
   });
   queryClient.setQueryData(['settings', 'proxy'], { proxy: null, source: 'default' });
 
@@ -80,6 +81,13 @@ describe('CookieSettingsModal Component (R2 Acceptance Criteria)', () => {
     expect(html).toContain('youtube.com');
     expect(html).toContain('LOGIN_INFO');
     expect(html).toContain('Bypasses YouTube bot verification');
+
+    // TikTok guidance
+    expect(html).toContain('TikTok');
+    expect(html).toContain('tiktok.com');
+    expect(html).toContain('sessionid_ss');
+    expect(html).toContain('sid_tt');
+    expect(html).toContain('sid_guard');
   });
 
   it('displays platform tabs for Cookies and Proxy', () => {

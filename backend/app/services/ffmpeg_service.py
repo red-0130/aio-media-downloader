@@ -1,10 +1,11 @@
 """FFmpeg media post-processing service powered by pyffmpeg."""
 
-import asyncio
 import logging
 import os
 import shutil
 from pathlib import Path
+
+from app.services._exec import redact_proxy_secrets, run_subprocess
 
 _CACHED_FFMPEG_BIN: str | None = None
 
@@ -52,29 +53,11 @@ async def run_ffmpeg_command(cmd: list[str]) -> None:
     if resolved_cmd and (resolved_cmd[0] == "ffmpeg" or resolved_cmd[0].endswith("/ffmpeg")):
         resolved_cmd[0] = get_ffmpeg_bin()
 
-    process = await asyncio.create_subprocess_exec(
-        *resolved_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await process.communicate()
-    finally:
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            except Exception:
-                pass
-            try:
-                await asyncio.shield(process.wait())
-            except (asyncio.CancelledError, Exception):
-                pass
-
-    if process.returncode != 0:
-        err_msg = stderr.decode("utf-8", errors="replace")
-        raise RuntimeError(f"FFmpeg command failed (exit code {process.returncode}): {err_msg}")
+    returncode, _stdout, stderr = await run_subprocess(resolved_cmd)
+    if returncode != 0:
+        raise RuntimeError(
+            f"FFmpeg command failed (exit code {returncode}): {redact_proxy_secrets(stderr)}"
+        )
 
 
 async def extract_audio(

@@ -69,18 +69,7 @@ def reset_runtime_proxy() -> None:
 
 def get_proxy() -> str | None:
     """Return effective proxy URL according to priority: runtime -> env -> None."""
-    global _runtime_proxy, _runtime_set
-    if _runtime_set and _runtime_proxy is not None:
-        return _runtime_proxy
-
-    if not _runtime_set and settings.SOCKS5_PROXY:
-        return settings.SOCKS5_PROXY
-
-    if _runtime_set and _runtime_proxy is None:
-        # Runtime explicitly cleared proxy
-        return None
-
-    return settings.SOCKS5_PROXY
+    return get_proxy_config(client_facing=False).proxy
 
 
 def get_proxy_config(client_facing: bool = False) -> ProxyConfig:

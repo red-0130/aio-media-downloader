@@ -38,6 +38,7 @@ export const KEY_COOKIES_BY_PLATFORM: Record<string, string[]> = {
   twitter: ['auth_token', 'ct0'],
   x: ['auth_token', 'ct0'],
   youtube: ['SID', '__Secure-1PSID', 'LOGIN_INFO'],
+  tiktok: ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard'],
 };
 
 /**

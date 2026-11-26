@@ -107,6 +107,19 @@ const PLATFORM_GUIDES: Record<CookiePlatform, PlatformGuide> = {
       'Upload the cookies.txt file or paste the text into the YouTube section below.',
     ],
   },
+  tiktok: {
+    name: 'TikTok',
+    domain: 'tiktok.com',
+    keyCookies: ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard'],
+    whyNeeded: 'Helps bypass login walls, region locks, and CAPTCHA checks for videos and photo slideshows.',
+    steps: [
+      'Open a new browser tab and sign into https://www.tiktok.com.',
+      'Confirm that creator videos and profiles load without login prompts.',
+      'Click your cookie export extension icon while on the tiktok.com tab.',
+      'Export cookies as Netscape format. Key session cookies include "sessionid", "sessionid_ss", "sid_tt", and "sid_guard".',
+      'Upload the .txt file or paste the Netscape text into the TikTok section below.',
+    ],
+  },
 };
 
 const RECOMMENDED_EXTENSIONS = [
@@ -138,7 +151,64 @@ const PLATFORMS: { id: CookiePlatform; name: string; desc: string }[] = [
     name: 'YouTube',
     desc: 'Required for age-restricted videos and bot check verification',
   },
+  {
+    id: 'tiktok',
+    name: 'TikTok',
+    desc: 'Bypasses login walls, rate limits, and CAPTCHA checks for videos & slideshows',
+  },
 ];
+
+const PlatformGuideCard: React.FC<{ guide: PlatformGuide; compact?: boolean }> = ({
+  guide,
+  compact = false,
+}) => (
+  <Card padding={compact ? 2 : 3} variant={compact ? 'muted' : 'default'} width="100%">
+    <VStack gap={2} width="100%">
+      <HStack gap={2} align="center" justify="between">
+        {compact ? (
+          <>
+            <Text weight="semibold">
+              How to retrieve {guide.name} cookies:
+            </Text>
+            <Text type="supporting" color="secondary">
+              Domain: {guide.domain}
+            </Text>
+          </>
+        ) : (
+          <>
+            <HStack gap={1} align="center">
+              <Key className="w-3.5 h-3.5 text-indigo-400" />
+              <Text weight="semibold">
+                {guide.name} ({guide.domain})
+              </Text>
+            </HStack>
+            <Badge
+              variant="purple"
+              label={`Key cookies: ${guide.keyCookies.join(', ')}`}
+            />
+          </>
+        )}
+      </HStack>
+
+      {!compact && (
+        <Text type="supporting" color="secondary">
+          {guide.whyNeeded}
+        </Text>
+      )}
+
+      <VStack gap={1} width="100%">
+        {guide.steps.map((step, idx) => (
+          <HStack key={idx} gap={2} align="start">
+            <Badge variant="neutral" label={`${idx + 1}`} />
+            <Text type="supporting" color="secondary">
+              {step}
+            </Text>
+          </HStack>
+        ))}
+      </VStack>
+    </VStack>
+  </Card>
+);
 
 export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
   isOpen,
@@ -444,42 +514,9 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
                         <Text weight="semibold">
                           Platform Instructions:
                         </Text>
-                        {PLATFORMS.map(({ id }) => {
-                          const guide = PLATFORM_GUIDES[id];
-                          return (
-                            <Card key={id} padding={3} variant="default" width="100%">
-                              <VStack gap={2} width="100%">
-                                <HStack gap={2} align="center" justify="between">
-                                  <HStack gap={1} align="center">
-                                    <Key className="w-3.5 h-3.5 text-indigo-400" />
-                                    <Text weight="semibold">
-                                      {guide.name} ({guide.domain})
-                                    </Text>
-                                  </HStack>
-                                  <Badge
-                                    variant="purple"
-                                    label={`Key cookies: ${guide.keyCookies.join(', ')}`}
-                                  />
-                                </HStack>
-
-                                <Text type="supporting" color="secondary">
-                                  {guide.whyNeeded}
-                                </Text>
-
-                                <VStack gap={1} width="100%">
-                                  {guide.steps.map((step, idx) => (
-                                    <HStack key={idx} gap={2} align="start">
-                                      <Badge variant="neutral" label={`${idx + 1}`} />
-                                      <Text type="supporting" color="secondary">
-                                        {step}
-                                      </Text>
-                                    </HStack>
-                                  ))}
-                                </VStack>
-                              </VStack>
-                            </Card>
-                          );
-                        })}
+                        {PLATFORMS.map(({ id }) => (
+                          <PlatformGuideCard key={id} guide={PLATFORM_GUIDES[id]} />
+                        ))}
                       </VStack>
                     </VStack>
                   )}
@@ -598,25 +635,7 @@ export const CookieSettingsModal: React.FC<CookieSettingsModalProps> = ({
 
                           {/* Expanded Step Guide */}
                           {isGuideExpanded && (
-                            <Card padding={2} variant="muted" width="100%">
-                              <VStack gap={2} width="100%">
-                                <HStack gap={2} align="center" justify="between">
-                                  <Text weight="semibold">
-                                    How to retrieve {PLATFORM_GUIDES[id].name} cookies:
-                                  </Text>
-                                  <Text type="supporting" color="secondary">
-                                    Domain: {PLATFORM_GUIDES[id].domain}
-                                  </Text>
-                                </HStack>
-                                <VStack gap={1} width="100%">
-                                  {PLATFORM_GUIDES[id].steps.map((st, i) => (
-                                    <Text key={i} type="supporting" color="secondary">
-                                      {i + 1}. {st}
-                                    </Text>
-                                  ))}
-                                </VStack>
-                              </VStack>
-                            </Card>
+                            <PlatformGuideCard guide={PLATFORM_GUIDES[id]} compact />
                           )}
 
                           {/* Status Detail Note */}

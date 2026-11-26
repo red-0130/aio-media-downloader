@@ -54,7 +54,7 @@ def test_save_and_check_cookie_status(temp_environment):
     assert refreshed.cookie_count == 2
 
     # Path helper returns valid path
-    path = cookie_manager.get_cookie_path_for_platform("instagram")
+    path = cookie_manager.get_default_cookie_path("instagram")
     assert path is not None
     assert path.exists()
 
@@ -72,7 +72,7 @@ def test_expired_cookie_detected(temp_environment):
     assert "expired" in (status.details or "").lower()
 
     # Path helper should return None for expired cookies
-    assert cookie_manager.get_cookie_path_for_platform("twitter") is None
+    assert cookie_manager.get_default_cookie_path("twitter") is None
 
 
 def test_missing_cookie_status(temp_environment):
@@ -80,7 +80,7 @@ def test_missing_cookie_status(temp_environment):
     assert status.exists is False
     assert status.valid is False
     assert status.cookie_count == 0
-    assert cookie_manager.get_cookie_path_for_platform("youtube") is None
+    assert cookie_manager.get_default_cookie_path("youtube") is None
 
 
 def test_delete_cookies(temp_environment):
@@ -457,7 +457,6 @@ def test_expired_tiktok_cookie_detected(temp_environment):
     assert "expired" in (status.details or "").lower()
 
     assert cookie_manager.get_default_cookie_path("tiktok") is None
-    assert cookie_manager.get_cookie_path_for_platform("tiktok") is None
 
 
 def test_delete_tiktok_cookies(temp_environment):
@@ -476,72 +475,51 @@ def test_delete_tiktok_cookies(temp_environment):
     assert status.valid is False
 
 
-def test_default_cookie_management_helpers(temp_environment, tmp_path):
-    """Verify get_default_cookie_path, load_default_cookie, configure_default_cookie, set_default_cookie_path, and validate_netscape_file."""
+def test_default_cookie_lifecycle_and_validation(temp_environment):
+    """Verify default cookie lifecycle through save_cookies, check_cookie_status, get_default_cookie_path, and delete_cookies."""
     future_ts = int(time.time()) + 86400 * 7
-    content = VALID_NETSCAPE_TIKTOK.format(expiry=future_ts)
 
-    # Initially no cookie
+    # Initially missing
     assert cookie_manager.get_default_cookie_path("tiktok") is None
-    assert cookie_manager.load_default_cookie("tiktok") is None
+    assert cookie_manager.check_cookie_status("tiktok").exists is False
 
-    # Save via load_default_cookie_file
-    ext_file = tmp_path / "custom_tiktok.txt"
-    ext_file.write_text(content, encoding="utf-8")
+    # Invalid or header-only content raises ValueError without writing file
+    with pytest.raises(ValueError):
+        cookie_manager.save_cookies("tiktok", "random bad data that is not netscape")
+    with pytest.raises(ValueError, match="no cookie entries"):
+        cookie_manager.save_cookies("tiktok", "# Netscape HTTP Cookie File\n")
+    assert cookie_manager.get_default_cookie_path("tiktok") is None
 
-    # validate_netscape_file on external file
-    is_valid, count, err = cookie_manager.validate_netscape_file(ext_file)
-    assert is_valid is True
-    assert count == 2
-    assert err is None
-
-    # validate_netscape_file on non-existent file
-    is_valid, count, err = cookie_manager.validate_netscape_file(tmp_path / "nonexistent.txt")
-    assert is_valid is False
-    assert count == 0
-    assert "does not exist" in (err or "")
-
-    # validate_netscape_file on corrupted file
-    corrupt_file = tmp_path / "corrupt.txt"
-    corrupt_file.write_text("random bad data that is not netscape", encoding="utf-8")
-    is_valid, count, err = cookie_manager.validate_netscape_file(corrupt_file)
-    assert is_valid is False
-    assert count == 0
-
-    # load_default_cookie_file
-    status = cookie_manager.load_default_cookie_file("tiktok", ext_file)
+    # Saving headerless cookie line adds Netscape header automatically
+    headerless_line = f".tiktok.com\tTRUE\t/\tTRUE\t{future_ts}\tsessionid\ttt_sess_12345"
+    status = cookie_manager.save_cookies("tiktok", headerless_line)
+    assert status.exists is True
     assert status.valid is True
-    assert status.cookie_count == 2
-    assert cookie_manager.get_default_cookie_path("tiktok") is not None
-    loaded_text = cookie_manager.load_default_cookie("tiktok")
-    assert loaded_text is not None
-    assert "tt_sess_12345" in loaded_text
+    assert status.cookie_count == 1
 
-    # configure_default_cookie with content string
-    yt_content = VALID_NETSCAPE_YOUTUBE.format(expiry=future_ts)
-    yt_status = cookie_manager.configure_default_cookie("youtube", yt_content)
-    assert yt_status.valid is True
-    assert cookie_manager.get_default_cookie_path("youtube") is not None
+    path = cookie_manager.get_default_cookie_path("tiktok")
+    assert path is not None
+    saved_text = path.read_text(encoding="utf-8")
+    assert saved_text.startswith("# Netscape HTTP Cookie File\n")
+    assert "tt_sess_12345" in saved_text
 
-    # configure_default_cookie with external file Path
-    custom_tw_file = tmp_path / "custom_twitter.txt"
-    tw_content = VALID_NETSCAPE_TWITTER.format(expiry=future_ts)
-    custom_tw_file.write_text(tw_content, encoding="utf-8")
-    tw_status = cookie_manager.configure_default_cookie("twitter", custom_tw_file)
-    assert tw_status.valid is True
-    assert cookie_manager.get_default_cookie_path("twitter") == custom_tw_file.resolve()
+    # Header-only file on disk evaluates to valid=False and get_default_cookie_path returns None
+    path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    header_only_status = cookie_manager.check_cookie_status("tiktok")
+    assert header_only_status.exists is True
+    assert header_only_status.valid is False
+    assert cookie_manager.get_default_cookie_path("tiktok") is None
 
-    # set_default_cookie_path and reset_runtime_default_cookies
-    cookie_manager.reset_runtime_default_cookies()
-    # After reset, twitter resolves back to primary storage
-    assert cookie_manager.get_default_cookie_path("twitter") != custom_tw_file.resolve()
+    # Empty file on disk evaluates to valid=False
+    path.write_text("", encoding="utf-8")
+    empty_status = cookie_manager.check_cookie_status("tiktok")
+    assert empty_status.exists is True
+    assert empty_status.valid is False
+    assert cookie_manager.get_default_cookie_path("tiktok") is None
 
-    # configure_default_cookie with invalid file raises ValueError
-    with pytest.raises(ValueError):
-        cookie_manager.configure_default_cookie("tiktok", corrupt_file)
-
-    with pytest.raises(ValueError):
-        cookie_manager.configure_default_cookie("tiktok", tmp_path / "does_not_exist.txt")
+    # Deleting clears file and status
+    assert cookie_manager.delete_cookies("tiktok") is True
+    assert cookie_manager.check_cookie_status("tiktok").exists is False
 
 
 def test_default_cookie_env_var_override(temp_environment, tmp_path, monkeypatch):
@@ -551,7 +529,6 @@ def test_default_cookie_env_var_override(temp_environment, tmp_path, monkeypatch
     custom_env_file.write_text(VALID_NETSCAPE_TIKTOK.format(expiry=future_ts), encoding="utf-8")
 
     monkeypatch.setattr(settings, "TIKTOK_COOKIES_FILE", str(custom_env_file))
-    cookie_manager.reset_runtime_default_cookies()
 
     resolved = cookie_manager.get_default_cookie_path("tiktok")
     assert resolved == custom_env_file.resolve()
@@ -574,9 +551,68 @@ def test_default_cookies_dir_resolution(temp_environment, tmp_path, monkeypatch)
     cookie_file = default_dir / "instagram.txt"
     cookie_file.write_text(VALID_NETSCAPE_INSTAGRAM.format(expiry=future_ts), encoding="utf-8")
 
-    cookie_manager.reset_runtime_default_cookies()
     resolved = cookie_manager.get_default_cookie_path("instagram")
     assert resolved == cookie_file.resolve()
+
+
+def test_read_only_cookie_checks_do_not_create_directories(tmp_path, monkeypatch):
+    """Verify read-only checks and delete do not create missing directories, while save_cookies does."""
+    cookies_dir = tmp_path / "uncreated_cookies"
+    default_dir = tmp_path / "uncreated_default_cookies"
+    downloads_dir = tmp_path / "uncreated_downloads"
+
+    monkeypatch.setattr(settings, "COOKIES_DIR", cookies_dir)
+    monkeypatch.setattr(settings, "DEFAULT_COOKIES_DIR", default_dir)
+    monkeypatch.setattr(settings, "DOWNLOADS_DIR", downloads_dir)
+
+    status = cookie_manager.check_cookie_status("instagram")
+    assert status.exists is False
+    assert status.valid is False
+    assert len(cookie_manager.get_all_cookie_statuses()) == len(cookie_manager.SUPPORTED_PLATFORMS)
+    assert cookie_manager.get_default_cookie_path("instagram") is None
+    assert cookie_manager.delete_cookies("instagram") is False
+
+    assert not cookies_dir.exists()
+    assert not default_dir.exists()
+    assert not downloads_dir.exists()
+
+    future_ts = int(time.time()) + 86400
+    saved = cookie_manager.save_cookies("instagram", VALID_NETSCAPE_INSTAGRAM.format(expiry=future_ts))
+    assert saved.valid is True
+    assert cookies_dir.exists()
+
+
+def test_check_status_and_default_path_parse_and_resolve_once(temp_environment, monkeypatch):
+    """Verify check_cookie_status parses once and get_default_cookie_path resolves and parses once."""
+    future_ts = int(time.time()) + 86400
+    cookie_manager.save_cookies("instagram", VALID_NETSCAPE_INSTAGRAM.format(expiry=future_ts))
+
+    orig_parse = cookie_manager.parse_netscape_cookies
+    orig_find = cookie_manager._find_candidate_cookie_path
+    counts = {"parse": 0, "find": 0}
+
+    def counting_parse(content: str):
+        counts["parse"] += 1
+        return orig_parse(content)
+
+    def counting_find(platform: str):
+        counts["find"] += 1
+        return orig_find(platform)
+
+    monkeypatch.setattr(cookie_manager, "parse_netscape_cookies", counting_parse)
+    monkeypatch.setattr(cookie_manager, "_find_candidate_cookie_path", counting_find)
+
+    status = cookie_manager.check_cookie_status("instagram")
+    assert status.valid is True
+    assert counts["parse"] == 1
+    assert counts["find"] == 1
+
+    counts["parse"] = 0
+    counts["find"] = 0
+    resolved = cookie_manager.get_default_cookie_path("instagram")
+    assert resolved is not None
+    assert counts["parse"] == 1
+    assert counts["find"] == 1
 
 
 def test_netscape_format_validation_strict(temp_environment, tmp_path):

@@ -246,3 +246,38 @@ def test_classify_error_edge_case_credential_formats(monkeypatch: pytest.MonkeyP
     assert "socks5://user:[REDACTED]@proxy:1080" in str(err_empty_pw)
 
 
+@pytest.mark.asyncio
+async def test_redact_proxy_secrets_extra_proxies_and_ffmpeg_stderr(monkeypatch: pytest.MonkeyPatch):
+    """Verify _exec.redact_proxy_secrets scrubs extra_proxies and ffmpeg_service redacts stderr."""
+    from unittest.mock import AsyncMock, patch
+    from app.services import ffmpeg_service
+    from app.services._exec import redact_proxy_secrets
+    from tests.conftest import MockSubprocess
+
+    monkeypatch.setattr(settings, "SOCKS5_PROXY", "socks5://def_u:def_p@default.internal:1080")
+    runtime_with_auth = "socks5://rt_u:rt_p@runtime.net:1080"
+    runtime_no_auth = "socks5://caller-relay.internal:9050"
+
+    msg = f"Failed via {settings.SOCKS5_PROXY}, {runtime_with_auth}, and {runtime_no_auth}"
+    scrubbed = redact_proxy_secrets(msg, extra_proxies=[runtime_with_auth, runtime_no_auth])
+
+    assert "def_p" not in scrubbed
+    assert "rt_p" not in scrubbed
+    assert "caller-relay.internal" not in scrubbed
+    assert "[REDACTED_PROXY]" in scrubbed
+    assert "socks5://rt_u:[REDACTED]@runtime.net:1080" in scrubbed
+
+    mock_proc = MockSubprocess(
+        returncode=1,
+        stderr_bytes=f"Error connecting through {settings.SOCKS5_PROXY} and {runtime_with_auth}".encode(),
+    )
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
+        with pytest.raises(RuntimeError) as exc_info:
+            await ffmpeg_service.run_ffmpeg_command(["ffmpeg", "-i", "in.mp4"])
+        err_text = str(exc_info.value)
+        assert "def_p" not in err_text
+        assert "rt_p" not in err_text
+        assert "[REDACTED_PROXY]" in err_text
+        assert "socks5://rt_u:[REDACTED]@runtime.net:1080" in err_text
+
+

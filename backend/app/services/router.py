@@ -1,20 +1,20 @@
 """Domain and content-aware extraction router with automated fallback."""
 
-import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
-import os
+import inspect as inspect_mod
+from pathlib import Path
 import re
 import shutil
+from typing import Any, TypeVar
 import urllib.parse
 from urllib.parse import urlparse
-from pathlib import Path
-from typing import Any, Callable
 
 from app.config import settings
 from app.models.download import DownloadFileInfo, DownloadRequest, DownloadResult
 from app.models.inspect import FormatOption, InspectResponse, MediaItem
 from app.services import (
-    cleaner,
     cookie_manager,
     ffmpeg_service,
     gallerydl_service,
@@ -24,11 +24,65 @@ from app.services import (
     ytdlp_service,
     zip_service,
 )
-from app.services.ytdlp_service import (
-    AuthRequiredError,
-    ExtractionError,
-    RateLimitError,
-)
+from app.services._exec import AuthRequiredError, ExtractionError, RateLimitError
+
+_T = TypeVar("_T")
+
+
+@dataclass
+class RequestContext:
+    """Validated request context shared across inspect and download phases."""
+
+    clean_url: str
+    platform: str
+    primary: str
+    fallback: str | None
+    effective_proxy: str | None
+    client_cookies: dict[str, str | None] | str | None
+
+
+async def prepare_context(
+    url: str,
+    proxy: str | None = None,
+    cookies: dict[str, str | None] | str | None = None,
+) -> RequestContext:
+    """Validate URL, proxy, and client cookies once and classify the target platform."""
+    if not url or not isinstance(url, str) or not url.strip():
+        raise ValueError("URL cannot be empty")
+
+    clean_url = url.strip()
+    if not await security.is_safe_url_async(clean_url):
+        raise ValueError(f"Invalid or disallowed URL (SSRF protection): {url}")
+
+    clean_client_proxy = proxy.strip() if (proxy and proxy.strip()) else None
+    effective_proxy = clean_client_proxy or proxy_manager.get_proxy()
+    if effective_proxy:
+        effective_proxy = proxy_manager.validate_proxy_url(effective_proxy)
+
+    if cookies:
+        if isinstance(cookies, str):
+            if cookies.strip():
+                is_valid, _, err = cookie_manager.verify_netscape_content(cookies)
+                if not is_valid:
+                    raise ValueError(f"Invalid client cookie format: {err}")
+        elif isinstance(cookies, dict):
+            for plat, val in cookies.items():
+                if val and isinstance(val, str) and val.strip():
+                    is_valid, _, err = cookie_manager.verify_netscape_content(val)
+                    if not is_valid:
+                        raise ValueError(
+                            f"Invalid client cookie format for platform '{plat}': {err}"
+                        )
+
+    platform, primary, fallback = classify_url(clean_url)
+    return RequestContext(
+        clean_url=clean_url,
+        platform=platform,
+        primary=primary,
+        fallback=fallback,
+        effective_proxy=effective_proxy,
+        client_cookies=cookies,
+    )
 
 SUPPORTED_VIDEO_EXTENSIONS: tuple[str, ...] = (
     "mp4",
@@ -331,210 +385,132 @@ def _normalize_gallerydl_metadata(
     )
 
 
+async def _run_with_fallback(
+    platform: str,
+    primary: str,
+    fallback: str | None,
+    run_ytdlp: Callable[[], Awaitable[_T]],
+    run_gallerydl: Callable[[], Awaitable[_T]],
+    auth_action: str,
+) -> _T:
+    """Execute primary extraction engine and fall back cleanly with error precedence."""
+    runners = {"ytdlp": run_ytdlp, "gallerydl": run_gallerydl}
+    try:
+        return await runners[primary]()
+    except Exception as primary_err:
+        if fallback is None or fallback not in runners:
+            raise primary_err
+        try:
+            return await runners[fallback]()
+        except Exception as fallback_err:
+            if isinstance(primary_err, (AuthRequiredError, RateLimitError)):
+                raise primary_err
+            if isinstance(fallback_err, (AuthRequiredError, RateLimitError)):
+                raise fallback_err
+            if (
+                primary == "gallerydl"
+                and platform in ("instagram", "twitter")
+                and "no video" in str(fallback_err).lower()
+            ):
+                raise AuthRequiredError(
+                    f"Authentication required: {platform.capitalize()} requires session cookies to {auth_action} this post. Please configure cookies in Settings."
+                )
+            raise primary_err
+
+
 async def inspect(
     url: str,
     proxy: str | None = None,
     cookies: dict[str, str | None] | str | None = None,
+    context: RequestContext | None = None,
 ) -> InspectResponse:
     """Inspect media URL with automatic primary and fallback engine dispatch."""
-    clean_url = await security.validate_url_async(url)
-    platform, primary, fallback = classify_url(clean_url)
-
-    clean_client_proxy = proxy.strip() if (proxy and proxy.strip()) else None
-    effective_proxy = clean_client_proxy or proxy_manager.get_proxy()
-    if effective_proxy:
-        effective_proxy = proxy_manager.validate_proxy_url(effective_proxy)
-
-    async with cookie_manager.resolve_cookies_context(platform, cookies) as cookies_path:
-        # Primary engine execution
-        if primary == "ytdlp":
-            try:
-                data = await ytdlp_service.inspect_url(
-                    clean_url, proxy=effective_proxy, cookies_path=cookies_path
-                )
-                return _normalize_ytdlp_metadata(clean_url, platform, data)
-            except Exception as primary_err:
-                if fallback == "gallerydl":
-                    try:
-                        gitems = await gallerydl_service.inspect_url(
-                            clean_url, proxy=effective_proxy, cookies_path=cookies_path
-                        )
-                        return _normalize_gallerydl_metadata(clean_url, platform, gitems)
-                    except Exception as fallback_err:
-                        if isinstance(primary_err, (AuthRequiredError, RateLimitError)):
-                            raise primary_err
-                        if isinstance(fallback_err, (AuthRequiredError, RateLimitError)):
-                            raise fallback_err
-                        raise primary_err
-                raise primary_err
-        else:  # primary == "gallerydl"
-            try:
-                gitems = await gallerydl_service.inspect_url(
-                    clean_url, proxy=effective_proxy, cookies_path=cookies_path
-                )
-                return _normalize_gallerydl_metadata(clean_url, platform, gitems)
-            except Exception as primary_err:
-                if fallback == "ytdlp":
-                    try:
-                        data = await ytdlp_service.inspect_url(
-                            clean_url, proxy=effective_proxy, cookies_path=cookies_path
-                        )
-                        return _normalize_ytdlp_metadata(clean_url, platform, data)
-                    except Exception as fallback_err:
-                        if isinstance(primary_err, (AuthRequiredError, RateLimitError)):
-                            raise primary_err
-                        if isinstance(fallback_err, (AuthRequiredError, RateLimitError)):
-                            raise fallback_err
-                        if platform in ("instagram", "twitter") and "no video" in str(fallback_err).lower():
-                            raise AuthRequiredError(
-                                f"Authentication required: {platform.capitalize()} requires session cookies to inspect this post. Please configure cookies in Settings."
-                            )
-                        raise primary_err
-                raise primary_err
-
-
-async def download(
-    task_id: str,
-    request: DownloadRequest,
-    progress_callback: Callable[..., Any] | None = None,
-    proxy: str | None = None,
-    metadata: dict[str, Any] | InspectResponse | None = None,
-    cookies: dict[str, str | None] | str | None = None,
-) -> DownloadResult:
-    """Execute media download with naming conventions, audio conversion, and ZIP bundling."""
-    clean_url = await security.validate_url_async(request.url)
-    platform, primary, fallback = classify_url(clean_url)
-
-    clean_client_proxy = (proxy.strip() if (proxy and proxy.strip()) else None) or (
-        request.proxy.strip() if (request.proxy and request.proxy.strip()) else None
-    )
-    effective_proxy = clean_client_proxy or proxy_manager.get_proxy()
-    if effective_proxy:
-        effective_proxy = proxy_manager.validate_proxy_url(effective_proxy)
-
-    client_cookies = cookies if cookies is not None else request.cookies
-
-    task_dir = settings.DOWNLOADS_DIR / task_id
-    task_dir.mkdir(parents=True, exist_ok=True)
-
-    downloaded_files: list[Path] = []
+    ctx = context or await prepare_context(url, proxy=proxy, cookies=cookies)
 
     async with cookie_manager.resolve_cookies_context(
-        platform, client_cookies
+        ctx.platform, ctx.client_cookies
     ) as cookies_path:
-        # Download via primary engine, with fallback on failure
-        if primary == "ytdlp":
-            try:
-                downloaded_files = await ytdlp_service.download_media(
-                    url=clean_url,
-                    output_dir=task_dir,
-                    format_id=request.format_id,
-                    extract_audio=request.extract_audio,
-                    audio_format=request.audio_format,
-                    proxy=effective_proxy,
-                    cookies_path=cookies_path,
-                    progress_callback=progress_callback,
-                )
-            except Exception as primary_err:
-                if fallback == "gallerydl":
-                    try:
-                        downloaded_files = await gallerydl_service.download_items(
-                            url=clean_url,
-                            output_dir=task_dir,
-                            selected_indices=request.selected_indices,
-                            proxy=effective_proxy,
-                            cookies_path=cookies_path,
-                            progress_callback=progress_callback,
-                        )
-                    except Exception as fallback_err:
-                        if isinstance(primary_err, (AuthRequiredError, RateLimitError)):
-                            raise primary_err
-                        if isinstance(fallback_err, (AuthRequiredError, RateLimitError)):
-                            raise fallback_err
-                        raise primary_err
-                else:
-                    raise primary_err
-        else:  # primary == "gallerydl"
-            try:
-                downloaded_files = await gallerydl_service.download_items(
-                    url=clean_url,
-                    output_dir=task_dir,
-                    selected_indices=request.selected_indices,
-                    proxy=effective_proxy,
-                    cookies_path=cookies_path,
-                    progress_callback=progress_callback,
-                )
-            except Exception as primary_err:
-                if fallback == "ytdlp":
-                    try:
-                        downloaded_files = await ytdlp_service.download_media(
-                            url=clean_url,
-                            output_dir=task_dir,
-                            format_id=request.format_id,
-                            extract_audio=request.extract_audio,
-                            audio_format=request.audio_format,
-                            proxy=effective_proxy,
-                            cookies_path=cookies_path,
-                            progress_callback=progress_callback,
-                        )
-                    except Exception as fallback_err:
-                        if isinstance(primary_err, (AuthRequiredError, RateLimitError)):
-                            raise primary_err
-                        if isinstance(fallback_err, (AuthRequiredError, RateLimitError)):
-                            raise fallback_err
-                        if platform in ("instagram", "twitter") and "no video" in str(fallback_err).lower():
-                            raise AuthRequiredError(
-                                f"Authentication required: {platform.capitalize()} requires session cookies to download this post. Please configure cookies in Settings."
-                            )
-                        raise primary_err
-                else:
-                    raise primary_err
+        async def _ytdlp() -> InspectResponse:
+            data = await ytdlp_service.inspect_url(
+                ctx.clean_url, proxy=ctx.effective_proxy, cookies_path=cookies_path
+            )
+            return _normalize_ytdlp_metadata(ctx.clean_url, ctx.platform, data)
 
+        async def _gallerydl() -> InspectResponse:
+            gitems = await gallerydl_service.inspect_url(
+                ctx.clean_url, proxy=ctx.effective_proxy, cookies_path=cookies_path
+            )
+            return _normalize_gallerydl_metadata(ctx.clean_url, ctx.platform, gitems)
 
-    if not downloaded_files:
-        raise ExtractionError("No files were downloaded")
-
-    # If audio extraction requested on gallery-dl downloaded video files
-    if request.extract_audio:
-        target_fmt = (request.audio_format or "mp3").lower().lstrip(".")
-        converted_files: list[Path] = []
-        total_videos = sum(
-            1 for f in downloaded_files if f.suffix.lower().lstrip(".") in SUPPORTED_VIDEO_EXTENSIONS
+        return await _run_with_fallback(
+            platform=ctx.platform,
+            primary=ctx.primary,
+            fallback=ctx.fallback,
+            run_ytdlp=_ytdlp,
+            run_gallerydl=_gallerydl,
+            auth_action="inspect",
         )
-        converted_count = 0
-        for raw_file in downloaded_files:
-            ext = raw_file.suffix.lower().lstrip(".")
-            if ext in SUPPORTED_VIDEO_EXTENSIONS:
-                converted_count += 1
-                if progress_callback:
-                    res = progress_callback(
-                        progress=min(round(90.0 + (converted_count / max(total_videos, 1)) * 9.0, 1), 99.0),
-                        message=f"Extracting audio ({converted_count}/{total_videos})...",
-                    )
-                    if asyncio.iscoroutine(res):
-                        await res
 
-                audio_out = raw_file.with_suffix(f".{target_fmt}")
-                # Ensure no collision with existing file or already converted items before conversion
-                if (audio_out.exists() or audio_out in converted_files) and audio_out != raw_file:
-                    counter = 1
-                    while audio_out.exists() or audio_out in converted_files:
-                        audio_out = raw_file.with_name(f"{raw_file.stem}_{counter}.{target_fmt}")
-                        counter += 1
 
-                await ffmpeg_service.extract_audio(
-                    input_file=raw_file,
-                    output_file=audio_out,
-                    audio_format=target_fmt,
+async def _extract_gallery_audio(
+    downloaded_files: list[Path],
+    audio_format: str,
+    progress_callback: Callable[..., Any] | None,
+) -> list[Path]:
+    """Convert video items produced by gallery-dl into the target audio format."""
+    target_fmt = (audio_format or "mp3").lower().lstrip(".")
+    converted_files: list[Path] = []
+    used_by_dir: dict[Path, set[str]] = {}
+    total_videos = sum(
+        1 for f in downloaded_files if f.suffix.lower().lstrip(".") in SUPPORTED_VIDEO_EXTENSIONS
+    )
+    converted_count = 0
+
+    for raw_file in downloaded_files:
+        ext = raw_file.suffix.lower().lstrip(".")
+        if ext in SUPPORTED_VIDEO_EXTENSIONS:
+            converted_count += 1
+            if progress_callback:
+                res = progress_callback(
+                    progress=min(round(90.0 + (converted_count / max(total_videos, 1)) * 9.0, 1), 99.0),
+                    message=f"Extracting audio ({converted_count}/{total_videos})...",
+                    stage="postprocessing",
                 )
-                if raw_file != audio_out:
-                    raw_file.unlink(missing_ok=True)
-                converted_files.append(audio_out)
-            else:
-                converted_files.append(raw_file)
-        downloaded_files = converted_files
+                if inspect_mod.isawaitable(res):
+                    await res
 
-    # Extract metadata if provided or probe if missing
+            used_names = used_by_dir.setdefault(raw_file.parent, set())
+            audio_name = naming_service.disambiguate_filename(
+                f"{raw_file.stem}.{target_fmt}",
+                used_names,
+                target_dir=raw_file.parent,
+                ignore_path=raw_file,
+            )
+            audio_out = raw_file.parent / audio_name
+
+            await ffmpeg_service.extract_audio(
+                input_file=raw_file,
+                output_file=audio_out,
+                audio_format=target_fmt,
+            )
+            if raw_file != audio_out:
+                raw_file.unlink(missing_ok=True)
+            converted_files.append(audio_out)
+        else:
+            converted_files.append(raw_file)
+
+    return converted_files
+
+
+async def _correlate_and_rename(
+    task_id: str,
+    task_dir: Path,
+    request: DownloadRequest,
+    ctx: RequestContext,
+    downloaded_files: list[Path],
+    metadata: dict[str, Any] | InspectResponse | None,
+) -> list[Path]:
+    """Correlate downloaded files with item metadata and apply platform naming conventions."""
     meta_dict: dict[str, Any] = {}
     if metadata:
         if isinstance(metadata, InspectResponse):
@@ -544,11 +520,14 @@ async def download(
     elif getattr(request, "metadata", None) and isinstance(request.metadata, dict):
         meta_dict = request.metadata
 
-    # If metadata is missing for Instagram, probe inspect info
-    if not meta_dict and platform == "instagram":
+    # If metadata is missing for Instagram, probe inspect info reusing validated context
+    if not meta_dict and ctx.platform == "instagram":
         try:
             inspected = await inspect(
-                clean_url, proxy=effective_proxy, cookies=client_cookies
+                ctx.clean_url,
+                proxy=ctx.effective_proxy,
+                cookies=ctx.client_cookies,
+                context=ctx,
             )
             meta_dict = inspected.model_dump()
         except Exception:
@@ -560,15 +539,15 @@ async def download(
         or meta_dict.get("user")
         or meta_dict.get("channel")
         or meta_dict.get("author")
-        or (platform == "instagram" and _extract_instagram_username_from_url(clean_url))
-        or ("instagram_user" if platform == "instagram" else None)
+        or (ctx.platform == "instagram" and _extract_instagram_username_from_url(ctx.clean_url))
+        or ("instagram_user" if ctx.platform == "instagram" else None)
     )
     date_val = (
         meta_dict.get("date")
         or meta_dict.get("upload_date")
         or meta_dict.get("timestamp")
         or meta_dict.get("created_at")
-        or (datetime.now(timezone.utc).strftime("%Y%m%d") if platform == "instagram" else None)
+        or (datetime.now(timezone.utc).strftime("%Y%m%d") if ctx.platform == "instagram" else None)
     )
     orig_name_first = (
         meta_dict.get("original_name_first")
@@ -656,7 +635,7 @@ async def download(
             or (f"item_{idx+1}" if len(downloaded_files) > 1 else "media")
         )
 
-        if platform == "instagram":
+        if ctx.platform == "instagram":
             candidate_name = naming_service.format_instagram_filename(
                 username=uploader,
                 date_str=item_date,
@@ -668,48 +647,43 @@ async def download(
         else:
             candidate_name = naming_service.format_standard_filename(
                 title=f"{title}_{idx+1}" if len(downloaded_files) > 1 else title,
-                platform=platform,
+                platform=ctx.platform,
                 media_id=str(media_id),
                 ext=file_ext,
             )
 
-        # Disambiguate if collision
-        if candidate_name in used_names or (
-            (task_dir / candidate_name).exists() and (task_dir / candidate_name) != f
-        ):
-            stem = Path(candidate_name).stem
-            ext_suffix = Path(candidate_name).suffix
-            counter = 1
-            disambiguated = f"{stem}_{counter}{ext_suffix}"
-            while disambiguated in used_names or (
-                (task_dir / disambiguated).exists() and (task_dir / disambiguated) != f
-            ):
-                counter += 1
-                disambiguated = f"{stem}_{counter}{ext_suffix}"
-            candidate_name = disambiguated
-
-        used_names.add(candidate_name)
+        candidate_name = naming_service.disambiguate_filename(
+            candidate_name, used_names, target_dir=task_dir, ignore_path=f
+        )
         target_path = task_dir / candidate_name
         if f != target_path:
             shutil.move(str(f), str(target_path))
         formatted_files.append(target_path)
 
-    # Package as ZIP if multiple files and package_as_zip is True
-    if request.package_as_zip and len(formatted_files) > 1:
+    return formatted_files
+
+
+def _package_download_result(
+    task_id: str,
+    task_dir: Path,
+    platform: str,
+    package_as_zip: bool,
+    formatted_files: list[Path],
+) -> DownloadResult:
+    """Package formatted output files as a ZIP archive, unbundled list, or single file."""
+    if package_as_zip and len(formatted_files) > 1:
         zip_filename = f"{platform}_bundle_{task_id}.zip"
         zip_path = task_dir / zip_filename
         zip_service.create_zip_archive(formatted_files, zip_path)
-        file_size = zip_path.stat().st_size
         return DownloadResult(
             task_id=task_id,
             filename=zip_filename,
             file_path=str(zip_path),
-            file_size=file_size,
+            file_size=zip_path.stat().st_size,
             download_url=f"/api/files/{task_id}/{urllib.parse.quote(zip_filename)}",
             is_zip=True,
         )
 
-    # Unbundled delivery for multiple files when package_as_zip is False
     if len(formatted_files) > 1:
         files_info = [
             DownloadFileInfo(
@@ -730,7 +704,6 @@ async def download(
             files=files_info,
         )
 
-    # Single file output
     single_res = formatted_files[0]
     return DownloadResult(
         task_id=task_id,
@@ -739,4 +712,76 @@ async def download(
         file_size=single_res.stat().st_size,
         download_url=f"/api/files/{task_id}/{urllib.parse.quote(single_res.name)}",
         is_zip=False,
+    )
+
+
+async def download(
+    task_id: str,
+    request: DownloadRequest,
+    progress_callback: Callable[..., Any] | None = None,
+    proxy: str | None = None,
+    metadata: dict[str, Any] | InspectResponse | None = None,
+    cookies: dict[str, str | None] | str | None = None,
+    context: RequestContext | None = None,
+) -> DownloadResult:
+    """Execute media download with naming conventions, audio conversion, and ZIP bundling."""
+    if context is None:
+        raw_proxy = (proxy.strip() if (proxy and proxy.strip()) else None) or (
+            request.proxy.strip() if (request.proxy and request.proxy.strip()) else None
+        )
+        raw_cookies = cookies if cookies is not None else request.cookies
+        ctx = await prepare_context(request.url, proxy=raw_proxy, cookies=raw_cookies)
+    else:
+        ctx = context
+
+    task_dir = settings.DOWNLOADS_DIR / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    async with cookie_manager.resolve_cookies_context(
+        ctx.platform, ctx.client_cookies
+    ) as cookies_path:
+        async def _ytdlp() -> list[Path]:
+            return await ytdlp_service.download_media(
+                url=ctx.clean_url,
+                output_dir=task_dir,
+                format_id=request.format_id,
+                extract_audio=request.extract_audio,
+                audio_format=request.audio_format,
+                proxy=ctx.effective_proxy,
+                cookies_path=cookies_path,
+                progress_callback=progress_callback,
+            )
+
+        async def _gallerydl() -> list[Path]:
+            return await gallerydl_service.download_items(
+                url=ctx.clean_url,
+                output_dir=task_dir,
+                selected_indices=request.selected_indices,
+                proxy=ctx.effective_proxy,
+                cookies_path=cookies_path,
+                progress_callback=progress_callback,
+            )
+
+        downloaded_files = await _run_with_fallback(
+            platform=ctx.platform,
+            primary=ctx.primary,
+            fallback=ctx.fallback,
+            run_ytdlp=_ytdlp,
+            run_gallerydl=_gallerydl,
+            auth_action="download",
+        )
+
+    if not downloaded_files:
+        raise ExtractionError("No files were downloaded")
+
+    if request.extract_audio:
+        downloaded_files = await _extract_gallery_audio(
+            downloaded_files, request.audio_format, progress_callback
+        )
+
+    formatted_files = await _correlate_and_rename(
+        task_id, task_dir, request, ctx, downloaded_files, metadata
+    )
+    return _package_download_result(
+        task_id, task_dir, ctx.platform, request.package_as_zip, formatted_files
     )

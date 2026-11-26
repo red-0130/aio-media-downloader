@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 # Characters forbidden in Windows/Linux/macOS filenames
@@ -221,3 +222,34 @@ def format_standard_filename(
     if not stem:
         stem = "media"
     return f"{stem}.{clean_ext}"
+
+
+def disambiguate_filename(
+    candidate: str,
+    used_names: set[str],
+    target_dir: Path | None = None,
+    ignore_path: Path | None = None,
+) -> str:
+    """Return a collision-free filename against used_names and target_dir, recording it in used_names."""
+
+    def _is_taken(name: str) -> bool:
+        if name in used_names:
+            return True
+        if target_dir is not None:
+            candidate_path = target_dir / name
+            if candidate_path.exists() and (ignore_path is None or candidate_path != ignore_path):
+                return True
+        return False
+
+    chosen = candidate
+    if _is_taken(chosen):
+        stem = Path(candidate).stem
+        suffix = Path(candidate).suffix
+        counter = 1
+        chosen = f"{stem}_{counter}{suffix}"
+        while _is_taken(chosen):
+            counter += 1
+            chosen = f"{stem}_{counter}{suffix}"
+
+    used_names.add(chosen)
+    return chosen

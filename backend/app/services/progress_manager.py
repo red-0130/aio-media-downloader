@@ -5,8 +5,11 @@ import json
 import threading
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, AsyncGenerator
+from app.config import settings
 from app.models.progress import TaskProgress
+from app.services._exec import redact_proxy_secrets
 
 
 class UnifiedLock:
@@ -60,6 +63,74 @@ class UnifiedLock:
 _tasks: dict[str, TaskProgress] = {}
 _subscribers: dict[str, list[asyncio.Queue]] = {}
 _lock = UnifiedLock()
+_active_workers: set[asyncio.Task] = set()
+_download_semaphores: dict[asyncio.AbstractEventLoop, asyncio.Semaphore] = {}
+_ACTIVE_STATUSES = frozenset({"queued", "downloading", "postprocessing"})
+
+
+def get_download_semaphore() -> asyncio.Semaphore:
+    """Return semaphore for current event loop to bound concurrent downloads."""
+    global _download_semaphores
+    loop = asyncio.get_running_loop()
+    sem = _download_semaphores.get(loop)
+    if sem is None:
+        _download_semaphores = {
+            lp: s for lp, s in _download_semaphores.items() if not lp.is_closed()
+        }
+        sem = asyncio.Semaphore(settings.MAX_CONCURRENT_DOWNLOADS)
+        _download_semaphores[loop] = sem
+    return sem
+
+
+def spawn_task_worker(
+    task_id: str,
+    coro_factory: Callable[[], Awaitable[Any]],
+) -> asyncio.Task:
+    """Spawn a bounded background worker task tracked in _active_workers."""
+
+    async def _run_worker() -> Any:
+        try:
+            async with get_download_semaphore():
+                return await coro_factory()
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(
+                    set_error(task_id=task_id, error_message="Task was cancelled")
+                )
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
+        except Exception as exc:
+            await set_error(
+                task_id=task_id,
+                error_message=redact_proxy_secrets(str(exc)),
+            )
+
+    worker_task = asyncio.create_task(_run_worker())
+    _active_workers.add(worker_task)
+    worker_task.add_done_callback(_active_workers.discard)
+    return worker_task
+
+
+async def wait_for_all_workers(timeout: float = 2.0) -> None:
+    """Await all background download tasks or cancel on timeout."""
+    if not _active_workers:
+        return
+    tasks = list(_active_workers)
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
+    except (Exception, asyncio.CancelledError):
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        if tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=timeout,
+                )
+            except Exception:
+                pass
 
 
 def _format_event(event_type: str, data: dict) -> dict:
@@ -68,6 +139,19 @@ def _format_event(event_type: str, data: dict) -> dict:
         "event": event_type,
         "data": json.dumps(data),
     }
+
+
+def _build_complete_payload(task: TaskProgress) -> dict[str, Any]:
+    """Build SSE complete event payload from a completed TaskProgress."""
+    payload: dict[str, Any] = {
+        "status": task.status,
+        "download_url": task.download_url,
+        "filename": task.filename,
+        "file_size": task.file_size,
+    }
+    if task.files is not None:
+        payload["files"] = task.files
+    return payload
 
 
 async def create_task(task_id: str | None = None, created_at: float | None = None) -> TaskProgress:
@@ -87,13 +171,14 @@ async def create_task(task_id: str | None = None, created_at: float | None = Non
 
 def get_task(task_id: str) -> TaskProgress | None:
     """Retrieve task progress by task_id."""
-    return _tasks.get(task_id)
+    with _lock:
+        return _tasks.get(task_id)
 
 
 def get_active_task_ids() -> set[str]:
     """Return set of task IDs that are currently running."""
-    active_statuses = {"queued", "downloading", "postprocessing"}
-    return {tid for tid, task in _tasks.items() if task.status in active_statuses}
+    with _lock:
+        return {tid for tid, task in _tasks.items() if task.status in _ACTIVE_STATUSES}
 
 
 async def _notify_subscribers(task_id: str, event: dict) -> None:
@@ -205,16 +290,7 @@ async def set_completed(
         task.files = safe_files
         task.message = "Download ready"
 
-        complete_payload: dict[str, Any] = {
-            "status": task.status,
-            "download_url": task.download_url,
-            "filename": task.filename,
-            "file_size": task.file_size,
-        }
-        if task.files is not None:
-            complete_payload["files"] = task.files
-
-        event = _format_event("complete", complete_payload)
+        event = _format_event("complete", _build_complete_payload(task))
         await _notify_subscribers(task_id, event)
 
 
@@ -280,14 +356,13 @@ def evict_expired_tasks(ttl_minutes: int, active_task_ids: set[str] | None = Non
     now = time.time()
     ttl_seconds = ttl_minutes * 60
     active_set = active_task_ids or set()
-    active_statuses = {"queued", "downloading", "postprocessing"}
 
     with _lock:
         expired_ids = [
             tid
             for tid, task in _tasks.items()
             if tid not in active_set
-            and task.status not in active_statuses
+            and task.status not in _ACTIVE_STATUSES
             and (now - task.created_at) >= ttl_seconds
         ]
 
@@ -313,15 +388,7 @@ async def subscribe_sse(task_id: str) -> AsyncGenerator[dict, None]:
                 "error", {"status": "error", "message": f"Task {task_id} not found"}
             )
         elif task.status == "completed":
-            complete_data: dict[str, Any] = {
-                "status": task.status,
-                "download_url": task.download_url,
-                "filename": task.filename,
-                "file_size": task.file_size,
-            }
-            if task.files is not None:
-                complete_data["files"] = task.files
-            terminal_event = _format_event("complete", complete_data)
+            terminal_event = _format_event("complete", _build_complete_payload(task))
         elif task.status == "error":
             terminal_event = _format_event(
                 "error", {"status": "error", "message": task.error or "Task failed"}
@@ -366,15 +433,7 @@ async def subscribe_sse(task_id: str) -> AsyncGenerator[dict, None]:
                         )
                         break
                     elif task.status == "completed":
-                        complete_data: dict[str, Any] = {
-                            "status": task.status,
-                            "download_url": task.download_url,
-                            "filename": task.filename,
-                            "file_size": task.file_size,
-                        }
-                        if task.files is not None:
-                            complete_data["files"] = task.files
-                        yield _format_event("complete", complete_data)
+                        yield _format_event("complete", _build_complete_payload(task))
                         break
                     elif task.status == "error":
                         yield _format_event(

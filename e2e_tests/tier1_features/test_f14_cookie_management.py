@@ -65,7 +65,7 @@ async def test_upload_cookie_file_api(
         "/api/settings/cookies/upload", data=data, files=files
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "saved"
+    assert resp.json()["status"] == "uploaded"
 
     cookie_path = isolated_env["cookies_dir"] / "twitter.txt"
     assert cookie_path.exists()

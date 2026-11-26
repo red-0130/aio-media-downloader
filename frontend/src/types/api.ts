@@ -44,7 +44,7 @@ export type TaskStatus =
   | 'error';
 
 /** Platforms supported by cookie manager */
-export type CookiePlatform = 'instagram' | 'twitter' | 'youtube';
+export type CookiePlatform = 'instagram' | 'twitter' | 'youtube' | 'tiktok';
 export type SupportedCookiePlatform = CookiePlatform;
 
 /** Origin of the active proxy setting */
@@ -281,7 +281,7 @@ export type ProgressSSEEvent =
 
 /** Status details for a platform's cookie file */
 export interface CookieStatus {
-  /** Platform name (instagram, twitter, youtube) */
+  /** Platform name (instagram, twitter, youtube, tiktok) */
   platform: CookiePlatform | string;
   /** Whether a cookie file exists on disk */
   exists: boolean;
@@ -300,6 +300,7 @@ export interface CookieStatusMap {
   instagram: CookieStatus;
   twitter: CookieStatus;
   youtube: CookieStatus;
+  tiktok: CookieStatus;
   [platform: string]: CookieStatus;
 }
 
@@ -308,7 +309,7 @@ export type CookieStatusResponse = Record<string, CookieStatus>;
 
 /** Payload to upload or paste cookie content (POST /api/settings/cookies) */
 export interface CookieUpdateRequest {
-  /** Target platform (instagram, twitter, youtube) */
+  /** Target platform (instagram, twitter, youtube, tiktok) */
   platform: CookiePlatform | string;
   /** Netscape HTTP Cookie File formatted text */
   content: string;

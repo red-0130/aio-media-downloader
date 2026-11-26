@@ -5,6 +5,7 @@ from pathlib import Path
 from app.services.naming_service import (
     _parse_to_yyyymmdd,
     _truncate_to_bytes,
+    disambiguate_filename,
     format_instagram_filename,
     format_standard_filename,
     sanitize_filename,
@@ -349,3 +350,26 @@ def test_multibyte_arabic_and_cyrillic_long_titles(tmp_path: Path):
     file_path_ru = tmp_path / fn_ru
     file_path_ru.touch()
     assert file_path_ru.exists()
+
+
+def test_disambiguate_filename_handles_sets_dirs_and_ignore_path(tmp_path: Path):
+    used: set[str] = set()
+    assert disambiguate_filename("photo.jpg", used) == "photo.jpg"
+    assert disambiguate_filename("photo.jpg", used) == "photo_1.jpg"
+    assert disambiguate_filename("photo_2.jpg", used) == "photo_2.jpg"
+    assert disambiguate_filename("photo.jpg", used) == "photo_3.jpg"
+
+    existing = tmp_path / "clip.mp3"
+    existing.touch()
+    source_vid = tmp_path / "clip.mp4"
+    source_vid.touch()
+
+    disk_used: set[str] = set()
+    assert (
+        disambiguate_filename("clip.mp3", disk_used, target_dir=tmp_path, ignore_path=source_vid)
+        == "clip_1.mp3"
+    )
+    assert (
+        disambiguate_filename("clip.mp3", set(), target_dir=tmp_path, ignore_path=existing)
+        == "clip.mp3"
+    )

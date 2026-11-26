@@ -1,16 +1,11 @@
 """gallery-dl wrapper service for photo carousels, galleries, and stories."""
 
-import asyncio
+import inspect
 import json
 from pathlib import Path
 from typing import Any, Callable
 
-from app.services.ytdlp_service import (
-    ExtractionError,
-    AuthRequiredError,
-    RateLimitError,
-    classify_error,
-)
+from app.services._exec import ExtractionError, classify_error, run_subprocess
 
 
 def parse_gallerydl_json(raw_text: str) -> list[dict[str, Any]]:
@@ -124,37 +119,16 @@ async def inspect_url(
 
     cmd.append(url)
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await process.communicate()
-    finally:
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            except Exception:
-                pass
-            try:
-                await asyncio.shield(process.wait())
-            except (asyncio.CancelledError, Exception):
-                pass
+    returncode, raw_stdout, err_msg = await run_subprocess(cmd)
 
-    if process.returncode != 0:
-        err_msg = stderr.decode("utf-8", errors="replace")
-        raise classify_error(err_msg)
+    if returncode != 0:
+        raise classify_error(err_msg, extra_proxies=(proxy,))
 
-    raw_stdout = stdout.decode("utf-8", errors="replace")
     items = parse_gallerydl_json(raw_stdout)
     if not items:
         # Check if stderr had warnings or error messages
-        err_msg = stderr.decode("utf-8", errors="replace")
         if err_msg.strip():
-            raise classify_error(err_msg)
+            raise classify_error(err_msg, extra_proxies=(proxy,))
         raise ExtractionError("gallery-dl found no media items for this URL")
 
     return items
@@ -192,60 +166,24 @@ async def download_items(
 
     cmd.append(url)
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    idx = 0
 
-    downloaded_lines: list[str] = []
-    stderr_lines: list[str] = []
+    async def _on_stdout_line(line: str) -> None:
+        nonlocal idx
+        if not line:
+            return
+        idx += 1
+        if progress_callback:
+            res = progress_callback(
+                progress=min(round(idx * 15.0, 1), 95.0),
+                message=f"Downloaded item {idx}",
+            )
+            if inspect.isawaitable(res):
+                await res
 
-    async def read_stdout():
-        if process.stdout:
-            idx = 0
-            while True:
-                line_bytes = await process.stdout.readline()
-                if not line_bytes:
-                    break
-                line = line_bytes.decode("utf-8", errors="replace").strip()
-                if line:
-                    downloaded_lines.append(line)
-                    idx += 1
-                    if progress_callback:
-                        res = progress_callback(
-                            progress=min(round(idx * 15.0, 1), 95.0),
-                            message=f"Downloaded item {idx}",
-                        )
-                        if asyncio.iscoroutine(res):
-                            await res
-
-    async def read_stderr():
-        if process.stderr:
-            while True:
-                line = await process.stderr.readline()
-                if not line:
-                    break
-                stderr_lines.append(line.decode("utf-8", errors="replace"))
-
-    try:
-        await asyncio.gather(read_stdout(), read_stderr(), process.wait())
-    finally:
-        if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            except Exception:
-                pass
-            try:
-                await asyncio.shield(process.wait())
-            except (asyncio.CancelledError, Exception):
-                pass
-
-    if process.returncode != 0:
-        err_msg = "".join(stderr_lines)
-        raise classify_error(err_msg)
+    returncode, _stdout, err_msg = await run_subprocess(cmd, on_stdout_line=_on_stdout_line)
+    if returncode != 0:
+        raise classify_error(err_msg, extra_proxies=(proxy,))
 
     # Recursively find all downloaded files in output_dir, excluding hidden, temporary, or cookie files
     files = [
@@ -257,9 +195,8 @@ async def download_items(
         and not p.name.startswith("client_cookies_")
     ]
     if not files:
-        err_msg = "".join(stderr_lines).strip()
-        if err_msg:
-            raise classify_error(err_msg)
+        if err_msg.strip():
+            raise classify_error(err_msg, extra_proxies=(proxy,))
         raise ExtractionError("gallery-dl found no media files to download")
 
     return sorted(files)
