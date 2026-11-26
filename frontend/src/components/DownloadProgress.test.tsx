@@ -181,4 +181,116 @@ describe('DownloadProgress Component (Anchor Link Replacement)', () => {
     expect(html).not.toContain('Save All Files');
     expect(html).toContain('Downloading Media...');
   });
+
+  it('wraps and clamps long single-file names while keeping the extension separate and visible', () => {
+    const longStem = 'a_very_long_unbroken_filename_without_spaces_1234567890_abcdefghijklmnopqrstuvwxyz';
+    const fullName = `${longStem}.mp4`;
+
+    const html = renderToString(
+      React.createElement(DownloadProgress, {
+        status: 'completed',
+        progress: 100,
+        speed: null,
+        eta: null,
+        message: 'Download ready',
+        downloadUrl: `/api/files/task-400/${fullName}`,
+        filename: fullName,
+        fileSize: 4096,
+        error: null,
+        isDownloading: false,
+        isComplete: true,
+      })
+    );
+
+    expect(html).toContain('astryx-stack-item');
+    expect(html).toContain('flex-shrink:1');
+    expect(html).toContain('-webkit-line-clamp:2');
+    expect(html).toContain(`>${longStem}<`);
+    expect(html).toContain('>.mp4<');
+    expect(html).toContain(`download="${fullName}"`);
+  });
+
+  it('keeps extensions visible on long filenames in multi-file items and handles filename edge cases', () => {
+    const longStem = 'instagram_story_carousel_item_without_spaces_0987654321_zyxwvutsrqponmlkjihgfedcba';
+    const files: DownloadFileItem[] = [
+      {
+        download_url: `/api/files/task-401/${longStem}.jpg`,
+        filename: `${longStem}.jpg`,
+        file_size: 8192,
+      },
+      {
+        download_url: '/api/files/task-401/long_filename_without_any_extension',
+        filename: 'long_filename_without_any_extension',
+        file_size: 2048,
+      },
+      {
+        download_url: '/api/files/task-401/.hidden_dotfile',
+        filename: '.hidden_dotfile',
+        file_size: 512,
+      },
+      {
+        download_url: '/api/files/task-401/trailing_dot.',
+        filename: 'trailing_dot.',
+        file_size: 512,
+      },
+      {
+        download_url: '/api/files/task-401/archive.tar.gz',
+        filename: 'archive.tar.gz',
+        file_size: 1024,
+      },
+      {
+        download_url: '/api/files/task-401/title.with_more_than_ten_chars_after_dot',
+        filename: 'title.with_more_than_ten_chars_after_dot',
+        file_size: 1024,
+      },
+    ];
+
+    const html = renderToString(
+      React.createElement(DownloadProgress, {
+        status: 'completed',
+        progress: 100,
+        speed: null,
+        eta: null,
+        message: 'Multi-item ready',
+        downloadUrl: null,
+        filename: null,
+        fileSize: 10240,
+        files,
+        error: null,
+        isDownloading: false,
+        isComplete: true,
+      })
+    );
+
+    expect(html).toContain(`>${longStem}<`);
+    expect(html).toContain('>.jpg<');
+    expect(html).toContain('>long_filename_without_any_extension<');
+    expect(html).toContain('>.hidden_dotfile<');
+    expect(html).toContain('>trailing_dot.<');
+    expect(html).toContain('>archive.tar<');
+    expect(html).toContain('>.gz<');
+    expect(html).toContain('>title.with_more_than_ten_chars_after_dot<');
+    expect(html).toContain(`download="${longStem}.jpg"`);
+  });
+
+  it('falls back to "Downloaded Media" when single-file filename is null', () => {
+    const html = renderToString(
+      React.createElement(DownloadProgress, {
+        status: 'completed',
+        progress: 100,
+        speed: null,
+        eta: null,
+        message: 'Download ready',
+        downloadUrl: '/api/files/task-402/file.bin',
+        filename: null,
+        fileSize: 1024,
+        error: null,
+        isDownloading: false,
+        isComplete: true,
+      })
+    );
+
+    expect(html).toContain('>Downloaded Media<');
+    expect(html).toContain('download="Downloaded Media"');
+  });
 });

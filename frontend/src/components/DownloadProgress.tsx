@@ -3,6 +3,7 @@ import {
   Card,
   VStack,
   HStack,
+  StackItem,
   Heading,
   Text,
   Badge,
@@ -10,6 +11,7 @@ import {
   ProgressBar,
   Banner,
   Link,
+  Tooltip,
 } from '@astryxdesign/core';
 import {
   Download,
@@ -46,6 +48,91 @@ export interface DownloadProgressProps {
 const encodeUrlForAnchor = (url: string): string => {
   return url.includes('#') ? url.replace(/#/g, '%23') : url;
 };
+
+const splitFilename = (name: string): { stem: string; ext: string | null } => {
+  const lastDot = name.lastIndexOf('.');
+  if (lastDot > 0 && lastDot < name.length - 1) {
+    const ext = name.slice(lastDot);
+    if (ext.length <= 10 && !/\s/.test(ext)) {
+      return { stem: name.slice(0, lastDot), ext };
+    }
+  }
+  return { stem: name, ext: null };
+};
+
+const FilenameLabel: React.FC<{ name: string; weight: 'semibold' | 'medium' }> = ({
+  name,
+  weight,
+}) => {
+  const { stem, ext } = splitFilename(name);
+  return (
+    <Tooltip content={name} hasHoverIndication={false}>
+      <HStack gap={0} align="end" width="100%">
+        {/* shortcut: align="end" may leave a gap on 2-line un-clamped stems; avoids JS ResizeObserver measurement */}
+        <StackItem style={{ flexShrink: 1 }}>
+          <Text weight={weight} maxLines={2} wordBreak="break-word" hasTruncateTooltip={false}>
+            {stem}
+          </Text>
+        </StackItem>
+        {ext && (
+          <StackItem size="static">
+            <Text weight={weight} textWrap="nowrap">
+              {ext}
+            </Text>
+          </StackItem>
+        )}
+      </HStack>
+    </Tooltip>
+  );
+};
+
+interface FileDownloadRowProps {
+  icon: React.ReactNode;
+  filename: string;
+  fileSize?: number | null;
+  downloadUrl: string;
+  linkLabel: string;
+  padding: 2 | 3;
+  gap: 2 | 3;
+  weight: 'semibold' | 'medium';
+}
+
+const FileDownloadRow: React.FC<FileDownloadRowProps> = ({
+  icon,
+  filename,
+  fileSize,
+  downloadUrl,
+  linkLabel,
+  padding,
+  gap,
+  weight,
+}) => (
+  <Card padding={padding} variant="muted" width="100%">
+    <HStack gap={gap} align="center" justify="between" width="100%">
+      <StackItem size="fill">
+        <HStack gap={gap} align="center" width="100%">
+          <StackItem size="static">{icon}</StackItem>
+          <StackItem size="fill">
+            <VStack gap={0} width="100%">
+              <FilenameLabel name={filename} weight={weight} />
+              {fileSize != null && fileSize > 0 && (
+                <Text type="supporting" color="secondary">
+                  {formatBytes(fileSize)}
+                </Text>
+              )}
+            </VStack>
+          </StackItem>
+        </HStack>
+      </StackItem>
+
+      <StackItem size="static">
+        <Link href={encodeUrlForAnchor(downloadUrl)} download={filename}>
+          {linkLabel}
+        </Link>
+      </StackItem>
+    </HStack>
+  </Card>
+);
 
 export const DownloadProgress: React.FC<DownloadProgressProps> = ({
   status,
@@ -179,30 +266,16 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
           <VStack gap={4} width="100%">
             {/* Single File Delivery Card */}
             {downloadUrl && (
-              <Card padding={3} variant="muted" width="100%">
-                <HStack gap={3} align="center" justify="between" width="100%" wrap="wrap">
-                  <HStack gap={3} align="center">
-                    <FileCheck className="w-6 h-6 text-emerald-400" />
-                    <VStack gap={0}>
-                      <Text weight="semibold">
-                        {filename || 'Downloaded Media'}
-                      </Text>
-                      {fileSize !== null && fileSize > 0 && (
-                        <Text type="supporting" color="secondary">
-                          {formatBytes(fileSize)}
-                        </Text>
-                      )}
-                    </VStack>
-                  </HStack>
-
-                  <Link
-                    href={encodeUrlForAnchor(downloadUrl)}
-                    download={filename || 'download'}
-                  >
-                    Save File
-                  </Link>
-                </HStack>
-              </Card>
+              <FileDownloadRow
+                icon={<FileCheck className="w-6 h-6 text-emerald-400" />}
+                filename={filename || 'Downloaded Media'}
+                fileSize={fileSize}
+                downloadUrl={downloadUrl}
+                linkLabel="Save File"
+                padding={3}
+                gap={3}
+                weight="semibold"
+              />
             )}
 
             {/* Unbundled Multi-File Items List */}
@@ -228,30 +301,17 @@ export const DownloadProgress: React.FC<DownloadProgressProps> = ({
 
                 <VStack gap={2} width="100%">
                   {files.map((file, idx) => (
-                    <Card key={idx} padding={2} variant="muted" width="100%">
-                      <HStack gap={2} align="center" justify="between" width="100%">
-                        <HStack gap={2} align="center">
-                          <Badge variant="neutral" label={`#${idx + 1}`} />
-                          <VStack gap={0}>
-                            <Text weight="medium">
-                              {file.filename}
-                            </Text>
-                            {file.file_size != null && file.file_size > 0 && (
-                              <Text type="supporting" color="secondary">
-                                {formatBytes(file.file_size)}
-                              </Text>
-                            )}
-                          </VStack>
-                        </HStack>
-
-                        <Link
-                          href={encodeUrlForAnchor(file.download_url)}
-                          download={file.filename}
-                        >
-                          Save
-                        </Link>
-                      </HStack>
-                    </Card>
+                    <FileDownloadRow
+                      key={idx}
+                      icon={<Badge variant="neutral" label={`#${idx + 1}`} />}
+                      filename={file.filename || 'Downloaded Media'}
+                      fileSize={file.file_size}
+                      downloadUrl={file.download_url}
+                      linkLabel="Save"
+                      padding={2}
+                      gap={2}
+                      weight="medium"
+                    />
                   ))}
                 </VStack>
               </VStack>
